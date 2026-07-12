@@ -64,9 +64,12 @@ async def get_dashboard_summary(
             schedule_risk.append({
                 "task_id": rs.task_id,
                 "task_name": task.task_name if task else "Unknown",
+                "wbs_code": task.wbs_code if task else None,
                 "risk_score": rs.risk_score,
                 "predicted_delay_days": rs.predicted_delay_days,
                 "contributing_factors": json.loads(rs.contributing_factors) if rs.contributing_factors else [],
+                "status": task.status if task else "not_started",
+                "is_critical_path": task.is_critical_path if task else False,
             })
     except Exception:
         schedule_risk = []
