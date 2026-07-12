@@ -1,0 +1,559 @@
+
+IMPLEMENTATION GUIDE
+EPC-Intel
+AI Intelligence Platform for Data Centre EPC Project Delivery
+ET AI Hackathon 2026 — Problem Statement 4
+Developer Build Document — Practical, No-Theory Edition
+Prepared for the engineering team · v1.0
+
+Table of Contents
+
+1. Overall Solution
+EPC-Intel is a single web platform that sits on top of every document, schedule, procurement record, and test log generated during the construction of a data centre. It replaces the current situation — specs in one folder, submittals in an inbox, schedules in MS Project, test records on paper — with one system that every role (PM, QA engineer, procurement lead, commissioning engineer) logs into.
+In plain terms, here is what happens end to end:
+A Project Manager creates a project and uploads the governing documents: specifications, design standards, the master schedule (as CSV/MS Project export), vendor submittals, and drawings.
+The system automatically reads every document (OCR + parsing), splits it into searchable chunks, and stores both the raw text and a vector embedding of each chunk.
+As new submittals arrive, the Compliance Agent automatically compares each submittal against the matching specification clauses and flags deviations — before a human has to read both documents side by side.
+As schedule and procurement data updates (manually or via CSV upload), the Schedule Risk Engine recomputes a delay-risk score per task and highlights tasks likely to slip in the next 2–4 weeks.
+As shipment updates arrive (manual entry or a tracking feed), the Supply Chain module plots critical equipment (UPS, generators, chillers, switchgear) on a map, flags at-risk deliveries, and suggests alternates.
+During commissioning, engineers open a guided checklist (TIA-942 / BICSI / Uptime Tier tests) inside the app, the Commissioning Copilot pre-fills expected values, and the completed test becomes a permanent, exportable record.
+At any point, any user can open the RFI/Knowledge Chat and ask a plain-English question ("What is the required clearance around the CRAC units on Level 2?"). The system retrieves the relevant chunks from ingested documents and answers with citations back to the source PDF and page.
+All of this is visible on one dashboard: open non-conformances, at-risk schedule tasks, at-risk shipments, and pending RFIs, so a PM can see the state of the entire project without opening five different tools.
+2. End-to-End Workflow
+This is the generic request lifecycle that every module follows. Module-specific variations are called out where they differ.
+User (browser)
+   |  HTTPS + JWT
+   v
+Frontend (Next.js)  --- renders UI, calls REST API via typed client
+   |
+   v
+API Gateway layer (FastAPI routers)  --- routes /api/v1/*
+   |
+   v
+Auth Middleware  --- verifies JWT, loads user + role, attaches to request context
+   |
+   v
+Request Validation  --- Pydantic schema validates body/query params
+   |
+   v
+Controller / Route Handler  --- orchestrates the use case
+   |
+   v
+Service Layer  --- business logic (e.g. ComplianceService, ScheduleRiskService)
+   |            |
+   |            +--> AI/ML Module (embedding, LLM call, LightGBM inference)
+   |            +--> External APIs (weather, geocoding, shipment feed)
+   v
+Data Access Layer (SQLAlchemy repositories)
+   |
+   v
+PostgreSQL (+ pgvector, + PostGIS) / Redis cache / S3 storage
+   |
+   v
+Response assembled (Pydantic response model) --> JSON
+   |
+   v
+Frontend updates UI (React Query cache) --> user sees result
+Stage-by-stage responsibilities
+3. Complete Architecture
+Production-ready, but sized for a team of 5–6 developers to build in a hackathon timeframe. Every component is something the team can actually stand up in days, not weeks.
+                                   +---------------------------+
+                                   |        Frontend            |
+                                   |  Next.js 14 (TS) + Tailwind|
+                                   |  shadcn/ui, Recharts,      |
+                                   |  MapLibre GL               |
+                                   |  Deployed on Vercel        |
+                                   +-------------+---------------+
+                                                 | HTTPS / JWT
+                                                 v
+                          +----------------------------------------------+
+                          |               Backend (FastAPI)               |
+                          |  Routers: auth, documents, compliance,        |
+                          |  schedule, supply-chain, commissioning, rfi   |
+                          |  Deployed on Render (Docker)                  |
+                          +------+-------------+-------------+-----------+
+                                 |             |             |
+                 +---------------+   +---------+---+   +-----+-------------+
+                 |                   |             |   |                    |
+                 v                   v             v   v                    v
+        +----------------+  +----------------+  +------------------+  +------------------+
+        | PostgreSQL 15  |  | Redis          |  | Object Storage   |  | AI/ML Services   |
+        | + pgvector     |  | (cache +       |  | S3 / MinIO       |  | - Embedding svc  |
+        | + PostGIS      |  |  Celery broker)|  | (docs, drawings, |  | - LLM (RAG) svc  |
+        +----------------+  +----------------+  |  test records)   |  | - Risk model svc |
+                                                 +------------------+  +------------------+
+                                                                              |
+                                              +-------------------------------+---+
+                                              |                                    |
+                                              v                                    v
+                                     External LLM API                    External APIs
+                                   (Claude / Anthropic API)         (Weather, Geocoding, Shipment feed)
+
+        Cross-cutting: Celery workers (async ingestion/OCR/embedding jobs) + Flower for monitoring
+        Logging: structured JSON logs -> stdout -> Grafana Loki (or file-based for hackathon)
+        Monitoring: Prometheus metrics + Grafana dashboards, Sentry for error tracking
+        CI/CD: GitHub Actions -> build & test -> deploy to Render/Vercel
+Component responsibilities
+4. Module Breakdown
+The system is split into five domain modules plus three shared modules. Each domain module maps directly to one of the challenge's suggested build areas.
+4.1 Document Ingestion & Knowledge Base (shared foundation)
+Purpose: Ingest every project document (spec, submittal, drawing, RFI, meeting minutes) and turn it into searchable, embeddable chunks used by both the Compliance Agent and the RFI Chat.
+Inputs: PDF/DOCX/XLSX/scanned image files, project_id, document_type tag.
+Outputs: Persisted Document row, extracted plaintext, DocumentChunk rows with embeddings, ingestion status.
+Internal logic:
+On upload, file is streamed to S3/MinIO and a Document row is created with status = 'queued'.
+A Celery task picks up the job: if the PDF has a text layer, extract with PyMuPDF; if scanned, run Tesseract OCR at 300 DPI.
+Text is split into ~500-token overlapping chunks (100-token overlap) using a recursive splitter that respects section headers.
+Each chunk is embedded (bge-large-en-v1.5 or OpenAI text-embedding-3-large) and stored in pgvector with metadata (page number, section heading, document_id).
+Document status is updated to 'ready'; a webhook/event triggers re-indexing for any module that depends on this document (e.g. Compliance re-scans open submittals against a newly ingested spec).
+Dependencies: Object storage, Celery + Redis broker, embedding provider.
+APIs exposed: POST /documents, GET /documents/{id}, GET /documents/{id}/status
+Key files: backend/app/modules/documents/{service.py, tasks.py, parser.py, chunking.py}
+
+4.2 Specification & Quality Compliance Agent
+Purpose: Automatically compare vendor submittals and shop drawings against governing specification clauses and flag deviations before they reach site.
+Inputs: Submittal document (ingested), linked specification section(s), vendor metadata.
+Outputs: Deviation records (clause, submittal excerpt, severity, AI confidence), compliance status per submittal.
+Internal logic:
+When a submittal is linked to one or more spec clauses, the service retrieves the relevant spec chunks (vector search, top-k=8) and the submittal's own chunks.
+A structured LLM prompt asks the model to compare submittal values against spec requirements clause-by-clause and return JSON: {clause_id, compliant, deviation_text, severity, confidence}.
+Numeric/unit-bearing requirements (voltage, capacity, clearance in mm) are additionally checked with a deterministic regex/unit-parsing pass so critical numeric deviations are never missed if the LLM misses them.
+Deviations are written to the deviations table with severity (Critical / Major / Minor) and surfaced on the Compliance dashboard; Critical deviations trigger an email/Slack-style in-app notification to the PM.
+Reviewer can accept, override, or dismiss an AI-flagged deviation — every action is logged for audit.
+Dependencies: Document Ingestion module, LLM service, Embedding service.
+APIs exposed: POST /submittals, POST /submittals/{id}/check, GET /submittals/{id}/deviations, PATCH /deviations/{id}
+Key files: backend/app/modules/compliance/{service.py, prompts.py, numeric_rules.py, router.py}
+
+4.3 Predictive Schedule Risk Engine
+Purpose: Score every open schedule task for probability and expected magnitude of delay, weeks before it would show up as a missed milestone.
+Inputs: Task list (planned/actual dates, WBS, dependencies), procurement status, workforce availability %, weather forecast, historical task duration variance.
+Outputs: Per-task risk_score (0–100), predicted_delay_days, top contributing factors, ranked critical-path risk list.
+Internal logic:
+Feature engineering job runs nightly (and on-demand): computes lead-time variance vs plan, upstream dependency slippage, workforce fill rate, 7-day weather severity index at project location, and vendor on-time-delivery history.
+Features are fed into a trained LightGBM model (binary classifier for 'will slip >5 days' + a regressor for expected delay days).
+Model output is combined with critical-path analysis (computed via a simple forward/backward pass over task dependencies) to prioritise which at-risk tasks actually threaten the finish date.
+Top contributing factors are extracted via SHAP values and shown to the PM in plain language (e.g. 'Switchgear delivery 9 days behind vendor commitment').
+Results are cached in Redis (5-minute TTL) since recomputation is not needed on every page view.
+Dependencies: Schedule data (CSV import or manual entry), Weather API, trained LightGBM model artifact.
+APIs exposed: POST /schedule/import, GET /schedule/risk, GET /schedule/tasks/{id}/risk-explanation
+Key files: backend/app/modules/schedule/{service.py, features.py, model.py, critical_path.py}, ml/schedule_risk/train.py
+
+4.4 Supply Chain Visibility & Risk Agent
+Purpose: Track critical long-lead equipment (UPS, generators, cooling towers, switchgear) geospatially and flag shipments at risk of missing their required-on-site date.
+Inputs: Shipment records (origin, destination, vendor, planned/actual milestones), tracking events (manual update or feed), required-on-site date from schedule.
+Outputs: Shipment risk_score, map layer of current positions, list of at-risk shipments with suggested mitigation.
+Internal logic:
+Each shipment stores origin/destination as PostGIS geometry points; tracking events append a location + timestamp trail.
+A risk score combines: days of buffer remaining vs required-on-site date, number of missed intermediate milestones, and a static route-risk weight (port congestion / customs complexity, configurable per lane).
+Shipments below a buffer threshold are flagged 'At Risk' and shown in a ranked list plus as red markers on the MapLibre map (green = on track, amber = watch, red = at risk).
+For flagged shipments, the service suggests mitigation options (expedite freight, alternate vendor if one exists in the vendors table for that equipment category) — recommendation only, no auto-booking.
+Dependencies: Document/Schedule modules (for required-on-site dates), Geocoding API, PostGIS.
+APIs exposed: POST /shipments, POST /shipments/{id}/events, GET /shipments/map, GET /shipments/at-risk
+Key files: backend/app/modules/supply_chain/{service.py, risk.py, router.py}
+
+4.5 Commissioning Quality Assurance Copilot
+Purpose: Guide engineers through standards-based commissioning test sequences (TIA-942, BICSI, Uptime Tier) and build the as-commissioned quality record automatically.
+Inputs: System type (power/cooling/IT), applicable standard, live test entries from the engineer.
+Outputs: Structured test record (pass/fail per step), auto-flagged non-conformances, exportable PDF commissioning report.
+Internal logic:
+A library of standard test templates (seeded from TIA-942/BICSI/Uptime checklists) defines ordered steps with expected value ranges per step.
+The engineer works through the checklist in the app; each entered value is validated in real time against the expected range and flagged if out of tolerance.
+On completion, the service auto-generates a structured test record and a formatted PDF report (via the same docx/pdf pipeline used for other exports) with signatures placeholder.
+Non-conformant steps automatically create a linked deviation-style record visible on the Compliance dashboard so it's tracked to closure.
+Dependencies: Compliance module (shares deviation tracking), PDF export utility.
+APIs exposed: GET /commissioning/templates, POST /commissioning/runs, PATCH /commissioning/runs/{id}/steps/{step_id}, GET /commissioning/runs/{id}/report
+Key files: backend/app/modules/commissioning/{service.py, templates.py, report.py}
+
+4.6 Project Knowledge & RFI Intelligence Agent
+Purpose: Conversational, cited Q&A over the full project document corpus, plus RFI de-duplication against previously resolved RFIs.
+Inputs: Natural-language question, project_id (scopes retrieval), optional document-type filter.
+Outputs: Answer text with inline citations (document + page), list of similar prior RFIs if the question matches an existing RFI.
+Internal logic:
+Query is embedded and matched against document_chunks via pgvector cosine similarity (top-k=6, scoped to project_id).
+Retrieved chunks are passed to the LLM with a system prompt that forces citation of [document_name, page] for every factual claim.
+In parallel, the query is matched against existing RFI questions using the same embedding index; if similarity > 0.85, the prior RFI and its resolution are surfaced first so the user can skip re-asking.
+If no confident answer is found (low retrieval similarity), the system responds honestly that it could not find a source, rather than guessing, and offers to raise a new RFI.
+Every chat turn is persisted (chat_sessions/chat_messages) so a PM can audit what the assistant told a field engineer.
+Dependencies: Document Ingestion module, Embedding service, LLM service.
+APIs exposed: POST /rfi/ask, POST /rfi, GET /rfi, PATCH /rfi/{id}/resolve
+Key files: backend/app/modules/rfi/{service.py, retrieval.py, router.py}
+
+4.7 Auth & Access Control (shared)
+Purpose: Authenticate users and enforce role-based permissions across every module.
+Inputs: Email/password (or SSO stub), role assignment per project.
+Outputs: JWT access token (15 min) + refresh token (7 days), user/role context on every request.
+Internal logic:
+Passwords hashed with bcrypt; login issues a short-lived access token and a longer-lived refresh token (httpOnly cookie).
+Every protected route depends on a get_current_user dependency that decodes the JWT and loads the user + role.
+A require_role(*roles) dependency wraps sensitive routes (e.g. only PM/Admin can override a deviation).
+Dependencies: PostgreSQL users table.
+APIs exposed: POST /auth/register, POST /auth/login, POST /auth/refresh, POST /auth/logout
+Key files: backend/app/modules/auth/{service.py, security.py, dependencies.py}
+
+4.8 Dashboard & Notifications (shared)
+Purpose: Aggregate cross-module state into one project overview and push in-app notifications for critical events.
+Inputs: Reads from compliance, schedule, supply-chain, commissioning, rfi tables.
+Outputs: Aggregated dashboard payload; notification feed.
+Internal logic:
+Dashboard endpoint runs lightweight aggregate queries (counts, top-5 risk lists) rather than recomputing ML inference on every load — it reads cached/precomputed risk scores.
+A simple in-app notification table is written to whenever a Critical deviation, high-risk shipment, or high-risk schedule task is created; frontend polls / uses SWR for near-real-time updates.
+Dependencies: All domain modules.
+APIs exposed: GET /dashboard/summary, GET /notifications
+Key files: backend/app/modules/dashboard/{service.py, router.py}
+
+
+5. Folder Structure
+Monorepo with two top-level apps (frontend, backend) plus a shared ml/ directory for model training artifacts that are independent of the request/response cycle.
+epc-intel/
+├── frontend/                      # Next.js 14 app (TypeScript)
+│   ├── app/
+│   │   ├── (auth)/login/page.tsx
+│   │   ├── (dashboard)/dashboard/page.tsx
+│   │   ├── (dashboard)/compliance/[submittalId]/page.tsx
+│   │   ├── (dashboard)/schedule/page.tsx
+│   │   ├── (dashboard)/supply-chain/page.tsx
+│   │   ├── (dashboard)/commissioning/[runId]/page.tsx
+│   │   ├── (dashboard)/rfi-chat/page.tsx
+│   │   └── layout.tsx
+│   ├── components/
+│   │   ├── ui/                    # shadcn/ui primitives
+│   │   ├── charts/                # Recharts wrappers
+│   │   ├── map/                   # MapLibre wrappers (ShipmentMap, RiskLayer)
+│   │   └── shared/                # AppShell, Sidebar, NotificationBell
+│   ├── lib/
+│   │   ├── api-client.ts          # typed fetch wrapper
+│   │   ├── auth.ts                # token storage/refresh
+│   │   └── query-client.ts        # React Query setup
+│   ├── hooks/                     # useDashboard, useDeviations, useRfiChat ...
+│   ├── types/                     # generated/typed API contracts
+│   └── package.json
+│
+├── backend/                       # FastAPI app (Python)
+│   ├── app/
+│   │   ├── main.py                # app factory, router registration, middleware
+│   │   ├── core/
+│   │   │   ├── config.py          # pydantic Settings (env vars)
+│   │   │   ├── security.py        # JWT, password hashing
+│   │   │   ├── logging.py         # structured logger setup
+│   │   │   └── exceptions.py      # error envelope + handlers
+│   │   ├── db/
+│   │   │   ├── base.py            # SQLAlchemy Base, session factory
+│   │   │   └── migrations/        # Alembic
+│   │   ├── modules/
+│   │   │   ├── auth/
+│   │   │   ├── documents/
+│   │   │   ├── compliance/
+│   │   │   ├── schedule/
+│   │   │   ├── supply_chain/
+│   │   │   ├── commissioning/
+│   │   │   ├── rfi/
+│   │   │   └── dashboard/
+│   │   │       └── (each: router.py, service.py, models.py, schemas.py, repository.py)
+│   │   └── shared/
+│   │       ├── ai/                # embedding_client.py, llm_client.py, prompts/
+│   │       ├── storage/           # s3_client.py
+│   │       └── external/          # weather_client.py, geocode_client.py
+│   ├── tests/                     # pytest, mirrors modules/ structure
+│   ├── alembic.ini
+│   └── requirements.txt
+│
+├── ml/                             # training pipelines (offline, not called at request time)
+│   ├── schedule_risk/
+│   │   ├── train.py, features.py, model_artifact.pkl
+│   ├── compliance_eval/           # offline eval sets for deviation-detection accuracy
+│   └── data/                      # sample/synthetic training data
+│
+├── infra/
+│   ├── docker-compose.yml
+│   ├── Dockerfile.backend
+│   ├── Dockerfile.frontend
+│   └── github-actions/ci.yml
+│
+└── docs/
+    ├── architecture.md
+    └── api-reference.md
+
+6. Backend Design
+6.1 Layering
+Every module follows the same four-layer pattern so any developer can jump into any module and know where to look:
+Router (controller) — thin. Parses path/query params, calls the service, returns the response schema. No business logic.
+Service — all business logic lives here. Orchestrates repository calls, AI/ML client calls, and external API calls.
+Repository — the only layer that talks to SQLAlchemy/the database. Keeps queries out of services so they stay testable.
+Schemas — Pydantic request/response models, separate from SQLAlchemy models, so the API contract never accidentally leaks a DB column.
+6.2 Middleware & cross-cutting concerns
+6.3 Request flow example — Submittal compliance check
+POST /api/v1/submittals/{id}/check hits the router.
+Auth middleware confirms the caller has role QA_ENGINEER or PM.
+Pydantic validates the (empty) body — this is a trigger endpoint.
+ComplianceService.run_check(submittal_id) is called.
+Service loads the submittal + its linked spec section IDs via SubmittalRepository.
+Service calls EmbeddingClient to retrieve top-k spec chunks and top-k submittal chunks from pgvector.
+Service builds the structured prompt and calls LLMClient.compare_clauses(...).
+Service runs NumericRuleChecker over any clauses with parsed numeric requirements as a deterministic cross-check.
+Service merges AI + rule-based results, writes Deviation rows via DeviationRepository, updates submittal.status.
+If any deviation.severity == 'Critical', NotificationService.create() fires an in-app notification to the PM.
+Router returns a ComplianceCheckResponse with the list of deviations and overall status.
+6.4 Error handling convention
+// Example error envelope returned to the frontend
+{
+  "error": {
+    "code": "SPEC_NOT_LINKED",
+    "message": "Submittal has no linked specification section.",
+    "details": { "submittal_id": "a1b2c3" }
+  }
+}
+Domain exceptions are raised in the service layer (never in the router) and mapped once, globally, to HTTP status codes: NotFoundError→404, ConflictError→409, PermissionError→403, ValidationError→422, everything else→500 with the raw exception logged (never returned to the client).
+
+7. Frontend Design
+7.1 Pages
+7.2 Component strategy
+Server Components for read-heavy, non-interactive views (initial dashboard load, document lists) — faster first paint, less client JS.
+Client Components for anything interactive: chat window, commissioning checklist, map, upload dropzone.
+Shared primitives from shadcn/ui (Button, Card, Table, Dialog, Badge) kept unmodified in components/ui so upgrades stay easy; app-specific composition lives in components/shared and per-feature folders.
+7.3 State management
+Server state (anything from the API): TanStack Query (React Query). Every module gets a hooks file (useDeviations, useScheduleRisk, useShipments, useRfiChat) wrapping the typed api-client.
+Local/UI state (dialog open, selected filters, form inputs): React useState/useReducer — no global store needed for a project of this size.
+Auth state: a small AuthContext holding the current user + role, hydrated on app load from the refresh-token cookie.
+7.4 API integration
+// lib/api-client.ts — every call goes through one typed wrapper
+export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const token = getAccessToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...opts.headers },
+  });
+  if (res.status === 401) { await refreshAccessToken(); return apiFetch(path, opts); }
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+7.5 Authentication flow (frontend)
+User submits credentials on /login → POST /auth/login.
+Backend returns { access_token } in body and sets refresh_token as httpOnly cookie.
+Frontend stores access_token in memory (not localStorage, to reduce XSS exposure) and redirects to /dashboard.
+apiFetch attaches the access token to every call; on a 401 it silently calls /auth/refresh (cookie sent automatically) and retries once.
+On refresh failure, user is redirected to /login and in-memory state is cleared.
+7.6 UI flow — Compliance review (representative example)
+PM uploads a submittal PDF on /documents and links it to a spec section.
+PM (or auto-trigger) clicks 'Run Compliance Check' on /compliance/[submittalId].
+Frontend shows a loading skeleton while POST /submittals/{id}/check resolves (usually 5–15s, LLM-bound).
+Result renders as a clause-by-clause table: clause text, submittal excerpt, AI verdict, severity badge, confidence.
+QA engineer can click Accept / Override / Dismiss on any row; action posts to PATCH /deviations/{id} and the row updates optimistically via React Query's mutation cache.
+
+8. Database Design
+PostgreSQL 15 with two extensions: pgvector (embeddings — avoids standing up a separate vector database for a hackathon-scale corpus) and PostGIS (shipment/site geometries).
+8.1 Core tables
+8.2 Relationships
+projects (1) → (N) documents, submittals, schedule_tasks, shipments, commissioning_runs, rfis — every domain table carries a project_id foreign key.
+documents (1) → (N) document_chunks — cascade delete when a document is removed.
+vendors (1) → (N) submittals and (1) → (N) shipments.
+specifications (1) → (N) deviations; submittals (1) → (N) deviations.
+schedule_tasks (1) → (1, latest) schedule_risk_scores, with historical rows retained for trend charts (not overwritten).
+shipments (1) → (N) shipment_events.
+commissioning_runs (1) → (N) commissioning_steps; a failed step auto-creates a linked deviations row (nullable FK back to commissioning_steps).
+8.3 Indexes & constraints
+
+9. API Design
+All endpoints are versioned under /api/v1. Auth column: 'Yes' means a valid JWT is required; role restrictions are noted in the description where applicable.
+9.1 Auth
+9.2 Documents
+9.3 Compliance
+9.4 Schedule
+9.5 Supply chain
+9.6 Commissioning
+9.7 RFI & Knowledge Chat
+9.8 Dashboard
+
+10. AI/ML Implementation
+Four models work together. None of them needs a GPU to run in this system — all inference is either an API call (LLM, embeddings) or CPU-bound tree-model inference (LightGBM), which keeps the deployment simple and cheap.
+10.1 Model 1 — Embedding model (retrieval backbone)
+10.2 Model 2 — LLM for RAG generation & compliance comparison
+10.3 Model 3 — Schedule risk model
+10.4 Model 4 — Deterministic numeric compliance rules (companion to Model 2)
+
+11. Implementation Order
+Six phases. Each phase lists what to build and what it depends on from the phase before it — follow the order, since later phases (AI, frontend) assume the data model and auth from earlier ones already exist.
+Phase 1 — Repository, Database, Core Backend Skeleton (Days 1–2)
+Initialize monorepo structure (frontend/, backend/, ml/, infra/) per Section 5.
+Set up FastAPI app factory, config (pydantic-settings), structured logging, and global error handlers.
+Set up PostgreSQL with pgvector + PostGIS extensions; write Alembic migrations for all core tables from Section 8.
+Set up Docker Compose (Postgres, Redis, backend, MinIO) so every developer can run the full stack locally with one command.
+Depends on: Nothing — this is the foundation.
+
+Phase 2 — Authentication & Base CRUD APIs (Days 2–3)
+Implement auth module: register/login/refresh/logout, JWT issuing, bcrypt hashing.
+Implement RBAC dependency (require_role) and apply to a stub protected route to confirm it works end-to-end.
+Implement Projects, Users, Vendors CRUD — these are referenced by every other module.
+Depends on: Phase 1 (DB + app skeleton).
+
+Phase 3 — Document Ingestion Pipeline (Days 3–4)
+Implement document upload endpoint + S3/MinIO storage.
+Implement Celery worker for PDF text extraction (PyMuPDF) and OCR fallback (Tesseract).
+Implement chunking + embedding generation, write to document_chunks with pgvector index.
+This is the single highest-leverage phase — Compliance and RFI Chat cannot be built or demoed without it, so do not let it slip.
+Depends on: Phase 2 (auth, since uploads are role-gated).
+
+Phase 4 — AI/ML Modules (Days 4–7)
+Compliance Agent: LLM comparison prompt + numeric rule engine + deviation persistence (Section 10.1, 10.2, 10.4).
+RFI/Knowledge Chat: retrieval + cited LLM answers + RFI de-duplication (Section 10.2).
+Schedule Risk Engine: feature pipeline + LightGBM training on sample data + inference endpoint (Section 10.3).
+Supply Chain risk scoring (rule-based, no ML model needed — see Section 4.4).
+Commissioning templates + guided checklist logic + PDF report generation.
+Depends on: Phase 3 (document ingestion feeds Compliance and RFI Chat directly).
+
+Phase 5 — Frontend (Days 5–9, overlaps Phase 4)
+Auth pages + AppShell + protected routing.
+Dashboard summary page (can start against mocked/stubbed API responses while Phase 4 finishes).
+Documents, Compliance, Schedule, Supply Chain (map), Commissioning, RFI Chat pages in that priority order.
+Wire each page to its real API as the corresponding backend module lands — this is why frontend should start in parallel with Phase 4, not after it.
+Depends on: Phase 2 for auth; individual pages depend on their matching Phase 4 module.
+
+Phase 6 — Testing, Deployment, Polish (Days 9–10)
+Run through Section 12 testing strategy on all modules.
+Finalize Docker Compose, environment variables, and CI/CD pipeline (Section 13).
+Deploy backend + worker to Render, frontend to Vercel; smoke-test the deployed environment end-to-end.
+Record the demo video and prepare the architecture diagram/deck deliverables required by the hackathon brief.
+Depends on: All prior phases functionally complete.
+
+
+12. Testing Strategy
+12.1 Unit testing
+Backend: pytest per module, mirroring the modules/ folder structure. Mock the repository layer to test service logic in isolation; mock LLMClient/EmbeddingClient to test prompt-building and response-parsing without real API calls (and without cost).
+Numeric rule engine gets its own dedicated unit test file with a table of (spec_text, submittal_text, expected_deviation) cases — this is the easiest module to get high coverage on and it's safety-relevant, so treat 100% branch coverage here as a real target, not a nice-to-have.
+Frontend: component tests (Vitest + React Testing Library) for the compliance review table, risk badge rendering, and chat citation rendering.
+12.2 Integration testing
+Spin up a test Postgres (with pgvector/PostGIS) via Docker in CI; run real Alembic migrations before tests.
+Test the full document ingestion pipeline against 2–3 real sample PDFs (one text-layer, one scanned) checked into tests/fixtures/.
+Test the compliance check flow against a fixed spec+submittal pair with a known expected deviation, using a recorded/mocked LLM response (VCR-style cassette) so tests are deterministic and don't depend on live API availability.
+12.3 API testing
+httpx-based test client hitting every endpoint in Section 9 for the happy path, the documented error codes, and the auth/role boundary (verify a QA_ENGINEER cannot hit admin-only routes and vice versa).
+Contract check: response bodies validated against the same Pydantic schemas used to generate the frontend types, so a schema drift breaks CI immediately rather than surfacing as a frontend bug.
+12.4 AI model validation
+Compliance Agent: build a labelled eval set of ~30–50 (spec clause, submittal excerpt, is_deviation) pairs ahead of time; track precision/recall on every prompt change — this is the evaluation focus metric the judges will actually look for.
+Schedule Risk model: standard train/validation split with time-based holdout (train on earlier project history, validate on later), report AUC for the classifier and MAE for the delay-days regressor; compare against a naive baseline (e.g. 'always predict on-time') to prove the model adds value.
+RFI Chat: verify citation faithfulness manually on a sample of 20 questions — every citation shown must trace to an actual retrieved chunk (this is enforced in code per Section 10.2, but spot-check it anyway).
+12.5 Load testing
+Use locust or k6 against /rfi/ask and /submittals/{id}/check (the two LLM-bound, highest-latency endpoints) to confirm the rate limiter and async worker queue behave correctly under concurrent load, not just correctness under a single request.
+Confirm the Celery ingestion queue does not fall behind if 10+ documents are uploaded at once (a realistic scenario when a PM bulk-uploads a spec package).
+12.6 Edge cases to explicitly test
+Scanned/low-quality PDF that OCR partially fails on — system should mark ingestion as 'partial' rather than silently losing content.
+Submittal with no linked spec section — compliance check endpoint should return a clear 422, not attempt a check against nothing.
+RFI question with no relevant retrieved chunks (similarity below threshold) — must return an honest 'no source found' response, never a fabricated answer.
+Schedule task with missing historical data for a brand-new vendor — feature pipeline must fall back to category-level averages rather than crashing or returning null risk.
+Two shipments' events arriving out of chronological order — risk calculation must always use the most recent occurred_at, not the most recently inserted row.
+
+13. Deployment Guide
+13.1 Docker & Docker Compose (local/dev)
+# infra/docker-compose.yml (services, abbreviated)
+services:
+  postgres:
+    image: pgvector/pgvector:pg15   # includes pgvector; enable postgis via init SQL
+    environment: { POSTGRES_DB: epcintel, POSTGRES_PASSWORD: ${DB_PASSWORD} }
+    volumes: [ pgdata:/var/lib/postgresql/data, ./init.sql:/docker-entrypoint-initdb.d/init.sql ]
+  redis:
+    image: redis:7-alpine
+  minio:
+    image: minio/minio
+    command: server /data --console-address ':9001'
+  backend:
+    build: { context: ../backend, dockerfile: ../infra/Dockerfile.backend }
+    env_file: ../backend/.env
+    depends_on: [postgres, redis, minio]
+  worker:
+    build: { context: ../backend, dockerfile: ../infra/Dockerfile.backend }
+    command: celery -A app.worker worker --loglevel=info
+    depends_on: [postgres, redis, minio]
+  frontend:
+    build: { context: ../frontend, dockerfile: ../infra/Dockerfile.frontend }
+    environment: { NEXT_PUBLIC_API_BASE: http://localhost:8000/api/v1 }
+13.2 Environment variables
+13.3 Cloud deployment
+Backend + worker: containerized deploy on Render (or any container host) — two services from the same image, different start commands (uvicorn vs celery worker).
+Frontend: Vercel, connected directly to the frontend/ folder of the monorepo.
+Database: managed Postgres with pgvector/PostGIS support (Render Postgres, Supabase, or Neon — confirm extension availability before committing to a provider).
+Object storage: move from MinIO to real S3 (or the provider's equivalent) by swapping env vars only — the storage client is written against the S3 API from day one so this is a config change, not a code change.
+13.4 CI/CD (GitHub Actions)
+# infra/github-actions/ci.yml (outline)
+on: [pull_request, push: {branches: [main]}]
+jobs:
+  backend-test:
+    steps:
+      - checkout
+      - spin up postgres+redis service containers
+      - run alembic upgrade head
+      - pip install -r requirements.txt && pytest --cov
+  frontend-test:
+    steps:
+      - checkout
+      - npm ci && npm run lint && npm run typecheck && npm run test
+  deploy:
+    needs: [backend-test, frontend-test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - trigger Render deploy hook (backend/worker)
+      - Vercel deploy is automatic on push via Vercel's GitHub integration
+13.5 Monitoring & logging in production
+Structured JSON logs shipped to stdout; Render/hosting platform's log aggregation is sufficient for a hackathon deployment, with Grafana Loki as the documented upgrade path.
+Sentry captures unhandled exceptions on both frontend and backend, tagged with request_id so a frontend error can be correlated to the backend log line that caused it.
+Prometheus metrics endpoint (/metrics) on the backend exposing request latency histograms and Celery queue depth; a minimal Grafana dashboard covering these two is enough to demonstrate production-readiness.
+
+14. Development Checklist
+Copy this into your project tracker (Notion/Jira/GitHub Projects) as literal checkboxes.
+Foundation
+☐  Monorepo scaffolded (frontend/, backend/, ml/, infra/)
+☐  Docker Compose brings up postgres (pgvector+PostGIS), redis, minio, backend, worker, frontend with one command
+☐  Alembic migrations create all core tables from Section 8
+☐  Structured logging + global error envelope wired in
+☐  CI pipeline runs backend + frontend tests on every PR
+Auth
+☐  Register/login/refresh/logout working end-to-end
+☐  JWT + role attached to request context
+☐  require_role() enforced and unit-tested on at least one route per role
+Document Ingestion
+☐  Upload endpoint stores file in S3/MinIO and creates Document row
+☐  Celery worker extracts text (PyMuPDF) with OCR fallback (Tesseract)
+☐  Chunking + embedding generation populate document_chunks with pgvector index
+☐  Ingestion status visible in the UI (queued/processing/ready/failed)
+Compliance Agent
+☐  Submittal-to-spec linking implemented
+☐  LLM comparison prompt returns valid, schema-checked JSON
+☐  Numeric rule engine cross-checks quantitative clauses
+☐  Deviation records created with correct severity + detected_by tag
+☐  Accept/Override/Dismiss actions logged to audit_logs
+☐  Eval set (30–50 labelled pairs) built and precision/recall tracked
+Schedule Risk Engine
+☐  CSV/schedule import parses tasks + dependencies correctly
+☐  Feature pipeline computes all six input features from Section 10.3
+☐  LightGBM classifier + regressor trained and artifact saved to ml/schedule_risk/
+☐  Risk scores cached in schedule_risk_scores with model_version tag
+☐  SHAP-based contributing factors surfaced in the API response
+Supply Chain
+☐  Shipment CRUD + event trail implemented with PostGIS geometry columns
+☐  Risk scoring rule (buffer days + missed milestones + route weight) implemented
+☐  Map endpoint returns GeoJSON-compatible payload for MapLibre
+Commissioning
+☐  Standard test templates seeded (TIA-942/BICSI/Uptime subset)
+☐  Guided checklist UI validates entries against expected ranges in real time
+☐  Failed steps auto-create linked deviation records
+☐  PDF report generation working from a completed run
+RFI / Knowledge Chat
+☐  Retrieval scoped correctly to project_id (no cross-project leakage)
+☐  Citations validated against actually-retrieved chunks before rendering
+☐  RFI de-duplication via embedding similarity threshold tuned and tested
+☐  Chat transcript persisted for audit
+Frontend
+☐  Auth flow + protected routing
+☐  Dashboard, Documents, Compliance, Schedule, Supply Chain, Commissioning, RFI Chat pages complete
+☐  Loading and error states handled on every data-fetching component
+☐  Typed API client kept in sync with backend schemas
+Deployment & Deliverables
+☐  Backend + worker deployed to Render, frontend to Vercel
+☐  All environment variables set in the hosting platform (none hardcoded)
+☐  End-to-end smoke test on the deployed environment
+☐  Architecture diagram exported (Section 3 diagram, cleaned up for the deck)
+☐  Demo video recorded showing all five modules
+☐  Presentation deck finalized against the hackathon's judging criteria
+
+15. Common Pitfalls
+
+16. Deliverable
+This document is the Implementation_Guide.docx deliverable: a practical, developer-facing build reference for EPC-Intel covering solution overview, workflow, architecture, module breakdown, folder structure, backend/frontend/database/API design, AI/ML implementation, phased build order, testing strategy, deployment guide, checklist, and common pitfalls — tailored specifically to Problem Statement 4 (AI Intelligence Platform for Data Centre EPC Project Delivery).
