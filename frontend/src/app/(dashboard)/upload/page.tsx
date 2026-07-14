@@ -15,9 +15,7 @@ export default function UploadPage() {
   useEffect(() => {
     const fetchDocs = async () => {
       try {
-        const data = await apiFetch<any>('/documents', {
-          headers: { 'project-id': 'demo-project' }
-        });
+        const data = await apiFetch<any>('/documents');
         setDocuments(data.documents || []);
       } catch (err) {
         console.error("Failed to fetch documents", err);
@@ -34,9 +32,7 @@ export default function UploadPage() {
     const intervalId = setInterval(async () => {
       for (const doc of processingDocs) {
         try {
-          const res = await apiFetch<any>(`/documents/${doc.id}/status`, {
-            headers: { 'project-id': 'demo-project' }
-          });
+          const res = await apiFetch<any>(`/documents/${doc.id}/status`);
           if (res.status !== doc.ingestion_status) {
              setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ingestion_status: res.status } : d));
           }
@@ -63,9 +59,7 @@ export default function UploadPage() {
 
       const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
       const token = localStorage.getItem('auth_token');
-      const headers: any = {
-         'project-id': 'demo-project'
-      };
+      const headers: any = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
       const res = await fetch(`${API_BASE}/documents`, {

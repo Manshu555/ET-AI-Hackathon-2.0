@@ -18,15 +18,17 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/v1/dashboard/summary')
-      .then(res => res.json())
+    apiFetch<any>('/dashboard/summary')
       .then(data => {
         if (data.schedule_risk) {
           setTasks(data.schedule_risk);
         }
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        console.error(err);
+        setLoading(false);
+      });
   }, []);
 
   const getStatusBadge = (status: string) => {

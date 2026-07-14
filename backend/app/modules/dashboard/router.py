@@ -69,9 +69,9 @@ async def get_dashboard_summary(
                 "predicted_delay_days": rs.predicted_delay_days,
                 "contributing_factors": json.loads(rs.contributing_factors) if rs.contributing_factors else [],
                 "status": task.status if task else "not_started",
-                "is_critical_path": task.is_critical_path if task else False,
             })
-    except Exception:
+    except Exception as e:
+        print(f"Error fetching schedule risk: {e}")
         schedule_risk = []
 
     # At-risk shipments

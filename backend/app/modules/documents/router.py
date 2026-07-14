@@ -39,7 +39,7 @@ def _try_celery_dispatch(document_id: str) -> bool:
 async def upload_document(
     file: UploadFile = File(...),
     doc_type: str = Form(...),
-    project_id: str = Header(...),
+    project_id: str | None = Header(default=None),
     db: AsyncSession = Depends(get_project_db)
 ):
     """
@@ -49,17 +49,31 @@ async def upload_document(
     to extract text, chunk, and generate embeddings. If Celery is unavailable,
     processing happens inline (slower but works without Docker).
     """
-    # Upload to MinIO/S3
+    # Default to the first project if no project-id header is sent
+    if not project_id:
+        from app.modules.projects.models import Project
+        proj_res = await db.execute(select(Project).limit(1))
+        proj = proj_res.scalars().first()
+        project_id = proj.id if proj else "default"
+
+    # Read file content before any storage attempt (prevents closed-file issues)
     object_name = f"{project_id}/{uuid.uuid4()}_{file.filename}"
+    file_bytes = await file.read()
 
     try:
-        s3_client.upload_file(file.file, object_name)
+        import io
+        s3_client.upload_file(io.BytesIO(file_bytes), object_name)
+        logger.info(f"File {file.filename} stored as {object_name}")
     except Exception as e:
-        logger.error(f"S3 upload failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Storage service unavailable. Please try again."
-        )
+        # Final fallback: save directly to local filesystem
+        logger.warning(f"S3 client upload failed ({e}), saving directly to local fs")
+        import os
+        uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+        local_path = os.path.join(uploads_dir, object_name)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"File saved locally: {local_path}")
 
     # Save to database
     doc = models.Document(

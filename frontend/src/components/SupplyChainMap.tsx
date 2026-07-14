@@ -1,5 +1,5 @@
 "use client";
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { useEffect } from 'react';
@@ -29,6 +29,32 @@ interface Shipment {
   current_lng: number | null;
 }
 
+// Generates points along a quadratic bezier curve to create a nice arc between two coordinates
+function getCurvePoints(start: [number, number], end: [number, number]): [number, number][] {
+  const points: [number, number][] = [];
+  const [lat1, lng1] = start;
+  const [lat2, lng2] = end;
+  
+  // Midpoint
+  const midLat = (lat1 + lat2) / 2;
+  const midLng = (lng1 + lng2) / 2;
+  
+  // Offset the control point upwards (latitude) based on the distance to create an arc
+  const distance = Math.sqrt(Math.pow(lat2 - lat1, 2) + Math.pow(lng2 - lng1, 2));
+  // A slight positive offset curves the line 'upwards' visually on the map
+  const controlLat = midLat + (distance * 0.2); 
+  const controlLng = midLng;
+  
+  // Generate 20 points along the curve
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const lat = (1 - t) * (1 - t) * lat1 + 2 * (1 - t) * t * controlLat + t * t * lat2;
+    const lng = (1 - t) * (1 - t) * lng1 + 2 * (1 - t) * t * controlLng + t * t * lng2;
+    points.push([lat, lng]);
+  }
+  return points;
+}
+
 export default function SupplyChainMap({ shipments }: { shipments: Shipment[] }) {
   useEffect(() => {
     // Add pulse animation styles for the destination marker
@@ -42,13 +68,6 @@ export default function SupplyChainMap({ shipments }: { shipments: Shipment[] })
       .leaflet-container {
         background: #0b1121;
         font-family: inherit;
-      }
-      /* Darken the map tiles using CSS filters to match dark mode */
-      .leaflet-layer,
-      .leaflet-control-zoom-in,
-      .leaflet-control-zoom-out,
-      .leaflet-control-attribution {
-        filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
       }
       /* Style popups for dark mode natively */
       .leaflet-popup-content-wrapper,
@@ -74,8 +93,8 @@ export default function SupplyChainMap({ shipments }: { shipments: Shipment[] })
         scrollWheelZoom={true}
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
         />
         
         {/* Destination Marker */}
@@ -88,25 +107,39 @@ export default function SupplyChainMap({ shipments }: { shipments: Shipment[] })
           </Popup>
         </Marker>
 
-        {/* Shipment Markers */}
+        {/* Shipment Markers and Spline Curves */}
         {shipments.map((ship) => {
           if (!ship.current_lat || !ship.current_lng) return null;
           const color = ship.risk_score >= 70 ? "#ef4444" : ship.risk_score >= 40 ? "#f59e0b" : "#10b981";
           
+          const startCoord: [number, number] = [ship.current_lat, ship.current_lng];
+          const destCoord: [number, number] = [19.08, 72.88]; // Mumbai
+          const curvePath = getCurvePoints(startCoord, destCoord);
+
           return (
-            <Marker 
-              key={ship.id} 
-              position={[ship.current_lat, ship.current_lng]}
-              icon={customIcon(color)}
-            >
-              <Popup>
-                <div>
-                  <strong>{ship.equipment_type}</strong><br/>
-                  {ship.description}<br/>
-                  Risk Score: {ship.risk_score}%
-                </div>
-              </Popup>
-            </Marker>
+            <div key={ship.id}>
+              {/* Spline line connecting shipment to destination */}
+              <Polyline 
+                positions={curvePath} 
+                color={color} 
+                weight={2} 
+                opacity={0.6}
+                dashArray="5, 8"
+              />
+              
+              <Marker 
+                position={startCoord}
+                icon={customIcon(color)}
+              >
+                <Popup>
+                  <div>
+                    <strong>{ship.equipment_type}</strong><br/>
+                    {ship.description}<br/>
+                    Risk Score: {ship.risk_score}%
+                  </div>
+                </Popup>
+              </Marker>
+            </div>
           );
         })}
       </MapContainer>
