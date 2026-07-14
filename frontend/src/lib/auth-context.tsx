@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, setAccessToken, getAccessToken } from '@/lib/api-client';
+import toast from 'react-hot-toast';
 
 const API_BASE = typeof window !== 'undefined'
   ? (process.env.NEXT_PUBLIC_AUTH_API_URL || 'http://localhost:5000/api/v1')
@@ -91,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Login failed' }));
+      toast.error(err.detail || 'Login failed');
       throw new Error(err.detail || 'Login failed');
     }
 
@@ -107,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Registration failed' }));
+      toast.error(err.detail || 'Registration failed');
       throw new Error(err.detail || 'Registration failed');
     }
 
@@ -142,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
             if (!res.ok) {
               const err = await res.json().catch(() => ({ detail: 'Google auth failed' }));
+              toast.error(err.detail || 'Google auth failed');
               throw new Error(err.detail || 'Google auth failed');
             }
 

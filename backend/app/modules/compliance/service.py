@@ -10,12 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def extract_numeric_value(text: str) -> float:
-    """A simple deterministic rule engine for extracting numeric values."""
-    match = re.search(r'\b(\d+(\.\d+)?)\b', text)
-    if match:
-        return float(match.group(1))
-    return None
+from app.modules.compliance.numeric_rules import extract_numeric_value
 
 async def run_compliance_check(db: AsyncSession, submittal_id: str):
     # 1. Fetch Submittal and its chunks

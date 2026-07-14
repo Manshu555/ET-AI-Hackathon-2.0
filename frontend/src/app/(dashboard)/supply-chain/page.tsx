@@ -1,5 +1,11 @@
 "use client";
 import { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
+
+const SupplyChainMap = dynamic(
+  () => import('@/components/SupplyChainMap'),
+  { ssr: false, loading: () => <div className="h-[500px] w-full flex items-center justify-center text-gray-400">Loading map...</div> }
+);
 
 interface Shipment {
   id: string;
@@ -152,33 +158,7 @@ export default function SupplyChainPage() {
         </div>
       ) : (
         <div className="glass rounded-2xl p-6">
-          <div className="bg-secondary/50 rounded-xl h-[500px] flex items-center justify-center relative overflow-hidden">
-            {/* Simplified map visualization */}
-            <div className="absolute inset-0 opacity-10">
-              <svg viewBox="0 0 1000 500" className="w-full h-full">
-                <path d="M200,200 Q400,100 600,200 Q800,300 900,200" stroke="currentColor" fill="none" strokeWidth="2" />
-              </svg>
-            </div>
-            {shipments.map((ship, i) => ship.current_lat && ship.current_lng && (
-              <div key={i} className="absolute" style={{
-                left: `${((ship.current_lng + 180) / 360) * 100}%`,
-                top: `${((90 - ship.current_lat) / 180) * 100}%`,
-              }}>
-                <div className={`w-4 h-4 rounded-full border-2 ${ship.risk_score >= 70 ? 'bg-red-500 border-red-300' : ship.risk_score >= 40 ? 'bg-amber-500 border-amber-300' : 'bg-emerald-500 border-emerald-300'} animate-pulse`} />
-                <div className="absolute top-5 left-1/2 -translate-x-1/2 glass px-2 py-1 rounded text-[10px] whitespace-nowrap">
-                  {ship.equipment_type}
-                </div>
-              </div>
-            ))}
-            {/* Destination marker */}
-            <div className="absolute" style={{ left: '57%', top: '39%' }}>
-              <div className="w-5 h-5 rounded-full bg-blue-500 border-2 border-blue-300 animate-pulse" />
-              <div className="absolute top-6 left-1/2 -translate-x-1/2 glass px-2 py-1 rounded text-[10px] whitespace-nowrap font-semibold">
-                📍 Mumbai (Destination)
-              </div>
-            </div>
-            <p className="text-gray-500 text-sm absolute bottom-4 right-4">Simplified view — MapLibre integration for production</p>
-          </div>
+          <SupplyChainMap shipments={shipments} />
         </div>
       )}
     </div>

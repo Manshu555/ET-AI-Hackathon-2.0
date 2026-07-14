@@ -1,3 +1,5 @@
+import toast from 'react-hot-toast';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 let accessToken: string | null = null;
@@ -33,13 +35,18 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
     if (refreshed) {
       headers['Authorization'] = `Bearer ${getAccessToken()}`;
       const retry = await fetch(`${API_BASE}${path}`, { ...opts, headers, credentials: 'include' });
-      if (!retry.ok) throw await retry.json().catch(() => ({ error: { message: 'Request failed' } }));
+      if (!retry.ok) {
+        const errObj = await retry.json().catch(() => ({ error: { message: 'Request failed' } }));
+        toast.error(errObj.detail || errObj.error?.message || 'Request failed');
+        throw errObj;
+      }
       return retry.json();
     }
   }
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    toast.error(error.detail || error.error?.message || `Error ${res.status}`);
     throw error;
   }
 

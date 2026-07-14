@@ -1,5 +1,7 @@
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { apiFetch } from '@/lib/api-client';
+import toast from 'react-hot-toast';
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -7,11 +9,45 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [status, setStatus] = useState('');
-  const [documents, setDocuments] = useState<any[]>([
-    { filename: 'HVAC_Cooling_Spec.pdf', doc_type: 'specification', ingestion_status: 'ready' },
-    { filename: 'VendorA_Chiller_Submittal.pdf', doc_type: 'submittal', ingestion_status: 'ready' },
-    { filename: 'Electrical_Distribution_Spec.pdf', doc_type: 'specification', ingestion_status: 'ready' },
-  ]);
+  const [documents, setDocuments] = useState<any[]>([]);
+
+  // Fetch documents on mount
+  useEffect(() => {
+    const fetchDocs = async () => {
+      try {
+        const data = await apiFetch<any>('/documents', {
+          headers: { 'project-id': 'demo-project' }
+        });
+        setDocuments(data.documents || []);
+      } catch (err) {
+        console.error("Failed to fetch documents", err);
+      }
+    };
+    fetchDocs();
+  }, []);
+
+  // Poll for status updates
+  useEffect(() => {
+    const processingDocs = documents.filter(d => d.ingestion_status === 'processing' || d.ingestion_status === 'queued');
+    if (processingDocs.length === 0) return;
+
+    const intervalId = setInterval(async () => {
+      for (const doc of processingDocs) {
+        try {
+          const res = await apiFetch<any>(`/documents/${doc.id}/status`, {
+            headers: { 'project-id': 'demo-project' }
+          });
+          if (res.status !== doc.ingestion_status) {
+             setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, ingestion_status: res.status } : d));
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+  }, [documents]);
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,38 +61,36 @@ export default function UploadPage() {
       formData.append('file', file);
       formData.append('doc_type', docType);
 
-      const res = await fetch('http://localhost:8000/api/v1/documents', {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+      const token = localStorage.getItem('auth_token');
+      const headers: any = {
+         'project-id': 'demo-project'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`${API_BASE}/documents`, {
         method: 'POST',
-        headers: { 'project-id': 'demo-project' },
+        headers,
         body: formData,
       });
 
-      if (res.ok) {
-        const doc = await res.json();
-        setStatus('Processing with AI...');
-        setDocuments(prev => [{ filename: file.name, doc_type: docType, ingestion_status: 'processing' }, ...prev]);
-
-        setTimeout(() => {
-          setStatus('');
-          setSuccess(true);
-          setUploading(false);
-          setDocuments(prev => prev.map((d, i) => i === 0 ? { ...d, ingestion_status: 'ready' } : d));
-          setTimeout(() => { setSuccess(false); setFile(null); }, 3000);
-        }, 2000);
-      } else {
-        throw new Error('Upload failed');
+      if (!res.ok) {
+         const errData = await res.json().catch(()=>({}));
+         throw new Error(errData.detail || 'Upload failed');
       }
-    } catch (err) {
-      // Fallback for demo
-      setStatus('Processing with AI...');
-      setDocuments(prev => [{ filename: file.name, doc_type: docType, ingestion_status: 'processing' }, ...prev]);
-      setTimeout(() => {
-        setStatus('');
-        setSuccess(true);
-        setUploading(false);
-        setDocuments(prev => prev.map((d, i) => i === 0 ? { ...d, ingestion_status: 'ready' } : d));
-        setTimeout(() => { setSuccess(false); setFile(null); }, 3000);
-      }, 2000);
+
+      const doc = await res.json();
+      setStatus('');
+      setSuccess(true);
+      setUploading(false);
+      setDocuments(prev => [doc, ...prev]);
+      setTimeout(() => { setSuccess(false); setFile(null); }, 3000);
+      toast.success("Document uploaded successfully");
+    } catch (err: any) {
+      console.error(err);
+      setStatus('');
+      setUploading(false);
+      toast.error(err.message || 'Upload failed');
     }
   };
 

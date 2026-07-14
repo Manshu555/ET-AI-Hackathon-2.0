@@ -90,11 +90,11 @@ def _run_ingestion(document_id: str) -> None:
                 doc.ingestion_status = "ready"
 
             session.commit()
-            logger.info(f"✅ Document {doc.filename} ingested successfully: "
+            logger.info(f"[OK] Document {doc.filename} ingested successfully: "
                         f"{len(chunks)} chunks, {parsed.page_count} pages")
 
         except Exception as e:
-            logger.error(f"❌ Ingestion failed for {doc.filename}: {e}", exc_info=True)
+            logger.error(f"[FAIL] Ingestion failed for {doc.filename}: {e}", exc_info=True)
             doc.ingestion_status = "failed"
             session.commit()
             raise
