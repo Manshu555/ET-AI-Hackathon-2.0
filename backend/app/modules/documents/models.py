@@ -15,7 +15,8 @@ class Document(Base):
     filename = Column(String, nullable=False)
     storage_url = Column(String, nullable=False)
     version = Column(Integer, default=1)
-    ingestion_status = Column(String, default='queued') # queued, processing, ready, failed
+    page_count = Column(Integer, nullable=True)  # Populated after PDF extraction
+    ingestion_status = Column(String, default='queued') # queued, processing, ready, partial, failed
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class DocumentChunk(Base):
