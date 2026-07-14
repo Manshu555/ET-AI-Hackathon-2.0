@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, Boolean
 from sqlalchemy.sql import func
 import uuid
 from app.db.base import Base
@@ -12,6 +12,8 @@ class User(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False) # Admin, PM, QA_ENGINEER, PROCUREMENT, COMMISSIONING
+    password_hash = Column(String, nullable=True)  # Nullable for Google OAuth users
+    role = Column(String, nullable=False, default="engineer")
+    google_id = Column(String, unique=True, nullable=True)  # Google sub ID
+    auth_provider = Column(String, nullable=False, default="local")  # "local" or "google"
     created_at = Column(DateTime(timezone=True), server_default=func.now())

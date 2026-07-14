@@ -48,6 +48,22 @@ app.include_router(commissioning_router, prefix=f"{settings.API_V1_STR}/commissi
 app.include_router(rfi_router, prefix=f"{settings.API_V1_STR}/rfi", tags=["rfi"])
 app.include_router(dashboard_router, prefix=f"{settings.API_V1_STR}/dashboard", tags=["dashboard"])
 
+@app.on_event("startup")
+async def startup():
+    """Auto-create all database tables on startup."""
+    from app.db.base import engine, Base
+    # Import all models so Base.metadata knows about them
+    from app.modules.auth import models as auth_models  # noqa
+    from app.modules.documents import models as doc_models  # noqa
+    from app.modules.compliance import models as comp_models  # noqa
+    from app.modules.schedule import models as sched_models  # noqa
+    from app.modules.supply_chain import models as sc_models  # noqa
+    from app.modules.commissioning import models as comm_models  # noqa
+    
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    print("✅ Database tables created/verified")
+
 
 @app.get("/health")
 def health_check():

@@ -48,7 +48,8 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
 
 export async function refreshAccessToken(): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
+    const authApiBase = 'http://localhost:5000/api/v1';
+    const res = await fetch(`${authApiBase}/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });

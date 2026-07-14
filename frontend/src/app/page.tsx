@@ -1,92 +1,131 @@
 "use client";
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/auth-context';
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
+import { useEffect, useState } from "react";
+import AuthModal from "@/components/AuthModal";
 
-export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+export default function LandingPage() {
+  const { user } = useAuth();
   const router = useRouter();
-  const { login } = useAuth();
+  
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<"login" | "signup">("login");
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    try {
-      await login(email, password);
-      router.push('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Login failed');
-    } finally {
-      setLoading(false);
-    }
+  const openAuthModal = (mode: "login" | "signup") => {
+    setAuthModalMode(mode);
+    setIsAuthModalOpen(true);
   };
 
-  return (
-    <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
-      {/* Background aesthetic blurs */}
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-primary/20 rounded-full blur-[120px] pointer-events-none animate-pulse" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-accent/20 rounded-full blur-[120px] pointer-events-none animate-pulse" style={{ animationDelay: '1s' }} />
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[30%] h-[30%] bg-emerald-500/10 rounded-full blur-[100px] pointer-events-none" />
+  // If already logged in, redirect to dashboard
+  useEffect(() => {
+    if (user) {
+      router.push("/dashboard");
+    }
+  }, [user, router]);
 
-      <div className="glass p-10 rounded-2xl w-full max-w-md relative z-10 shadow-2xl">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-accent mb-4">
-            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-            </svg>
-          </div>
-          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">
-            EPC-Intel
+  return (
+    <div className="landing-page">
+      {/* Header */}
+      <header className="landing-header">
+        <div className="landing-header-inner">
+          <Link href="/" className="landing-logo">
+            <div className="landing-logo-icon">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+              </svg>
+            </div>
+            <span className="landing-logo-text">EPC-Intel</span>
+          </Link>
+          <nav className="landing-nav">
+            <button onClick={() => openAuthModal("login")} className="landing-btn">
+              Login
+            </button>
+            <button onClick={() => openAuthModal("signup")} className="landing-btn landing-btn-primary">
+              Sign Up
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      {/* Hero Section */}
+      <section className="landing-hero">
+        {/* Animated background blobs */}
+        <div className="landing-blob landing-blob-1"></div>
+        <div className="landing-blob landing-blob-2"></div>
+        <div className="landing-blob landing-blob-3"></div>
+
+        <div className="landing-hero-content">
+          <h1 className="landing-hero-title">
+            AI Intelligence Platform for
+            <span className="landing-gradient-text"> Data Centre EPC</span>
           </h1>
-          <p className="text-sm text-gray-400 mt-2">AI Intelligence Platform for Data Centre Delivery</p>
+          <p className="landing-hero-subtitle">
+            Automate compliance checking, schedule risk analysis, supply chain tracking,
+            and knowledge management — all powered by Gemini AI.
+          </p>
+          <div className="landing-hero-actions">
+            <button onClick={() => openAuthModal("signup")} className="landing-btn landing-btn-hero">
+              Get Started
+            </button>
+            <button onClick={() => openAuthModal("login")} className="landing-btn landing-btn-outline">
+              Sign In →
+            </button>
+          </div>
         </div>
 
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm p-3 rounded-lg mb-4">
-            {error}
+        {/* Feature Cards */}
+        <div className="landing-features">
+          <div className="landing-feature-card">
+            <div className="landing-feature-icon" style={{ background: "linear-gradient(135deg, #3b82f6, #8b5cf6)" }}>
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <h3>Compliance Agent</h3>
+            <p>AI-powered submittal-vs-spec comparison with deterministic numeric rules</p>
           </div>
-        )}
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin@epc-intel.com"
-              className="w-full bg-secondary/50 border border-white/10 rounded-lg px-4 py-3 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/50 transition-all"
-              required
-            />
+          <div className="landing-feature-card">
+            <div className="landing-feature-icon" style={{ background: "linear-gradient(135deg, #10b981, #06b6d4)" }}>
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <h3>Schedule Risk</h3>
+            <p>ML-driven critical path analysis and delay prediction for EPC projects</p>
           </div>
-          <div>
-            <label className="block text-sm text-gray-300 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="w-full bg-secondary/50 border border-white/10 rounded-lg px-4 py-3 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/50 transition-all"
-              required
-            />
+          <div className="landing-feature-card">
+            <div className="landing-feature-icon" style={{ background: "linear-gradient(135deg, #f59e0b, #ef4444)" }}>
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+            </div>
+            <h3>RFI Knowledge Chat</h3>
+            <p>RAG-powered Q&A over all your project documents with citations</p>
           </div>
+          <div className="landing-feature-card">
+            <div className="landing-feature-icon" style={{ background: "linear-gradient(135deg, #ec4899, #8b5cf6)" }}>
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <h3>Document Ingestion</h3>
+            <p>Upload PDFs, auto-chunk, embed and index for instant AI retrieval</p>
+          </div>
+        </div>
+      </section>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="block w-full text-center bg-gradient-to-r from-primary to-accent hover:from-primary-hover hover:to-accent/90 disabled:from-gray-600 disabled:to-gray-600 text-white font-medium py-3 rounded-lg transition-all mt-6 shadow-lg shadow-primary/20"
-          >
-            {loading ? 'Signing in...' : 'Sign In'}
-          </button>
-        </form>
+      {/* Footer */}
+      <footer className="landing-footer">
+        <p>© 2026 EPC-Intel — Built for ET AI Hackathon 2.0</p>
+      </footer>
 
-        <p className="text-xs text-gray-500 text-center mt-6">Demo: admin@epc-intel.com / admin</p>
-      </div>
+      {/* Auth Modal */}
+      <AuthModal 
+        isOpen={isAuthModalOpen} 
+        onClose={() => setIsAuthModalOpen(false)} 
+        initialMode={authModalMode} 
+      />
     </div>
   );
 }

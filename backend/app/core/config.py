@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = "" # Set in .env
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = "" # Set in .env for Google Sign-In
+    
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()

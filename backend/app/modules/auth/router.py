@@ -8,6 +8,9 @@ from app.modules.auth.dependencies import get_current_user
 from app.core import security
 from app.core.config import settings
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,6 +29,7 @@ async def register(user_in: schemas.UserCreate, db: AsyncSession = Depends(get_d
         email=user_in.email,
         password_hash=security.get_password_hash(user_in.password),
         role=user_in.role,
+        auth_provider="local",
     )
     db.add(user)
     await db.commit()
@@ -37,7 +41,7 @@ async def register(user_in: schemas.UserCreate, db: AsyncSession = Depends(get_d
 async def login(response: Response, user_in: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(models.User).where(models.User.email == user_in.email))
     user = result.scalars().first()
-    if not user or not security.verify_password(user_in.password, user.password_hash):
+    if not user or not user.password_hash or not security.verify_password(user_in.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
     access_token = security.create_access_token(subject=user.id, role=user.role)
