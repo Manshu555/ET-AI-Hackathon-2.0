@@ -25,6 +25,8 @@ async def create_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
+    db.add(models.ProjectMember(project_id=project.id, user_id=current_user.id))
+    await db.commit()
     return project
 
 
@@ -33,7 +35,12 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(models.Project).order_by(models.Project.name))
+    result = await db.execute(
+        select(models.Project)
+        .join(models.ProjectMember, models.ProjectMember.project_id == models.Project.id)
+        .where(models.ProjectMember.user_id == current_user.id)
+        .order_by(models.Project.name)
+    )
     return result.scalars().all()
 
 

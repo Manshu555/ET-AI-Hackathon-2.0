@@ -1,143 +1,92 @@
 "use client";
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
-import L from 'leaflet';
-import { useEffect } from 'react';
 
-// Fix for default marker icons in Leaflet + Next.js
-const customIcon = (color: string) => L.divIcon({
-  className: 'custom-leaflet-marker',
-  html: `<div style="background-color: ${color}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 4px rgba(255,255,255,0.2);"></div>`,
-  iconSize: [12, 12],
-  iconAnchor: [6, 6]
+import { useEffect } from 'react';
+import L from 'leaflet';
+import { MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+
+export interface MapShipment {
+  id: string;
+  equipment_type: string;
+  description?: string | null;
+  vendor_name?: string | null;
+  status: string;
+  risk_score: number;
+  current_lat?: number | null;
+  current_lng?: number | null;
+  destination_lat?: number | null;
+  destination_lng?: number | null;
+  required_on_site?: string | null;
+}
+
+const riskColor = (score: number) => score >= 70 ? '#ef4444' : score >= 40 ? '#f59e0b' : '#10b981';
+
+const markerIcon = (color: string, selected = false) => L.divIcon({
+  className: 'shipment-marker',
+  html: `<span style="display:block;width:${selected ? 18 : 14}px;height:${selected ? 18 : 14}px;border-radius:999px;background:${color};border:3px solid #fff;box-shadow:0 0 0 ${selected ? 5 : 3}px ${color}55"></span>`,
+  iconSize: [22, 22], iconAnchor: [11, 11],
 });
 
 const destinationIcon = L.divIcon({
-  className: 'custom-leaflet-marker',
-  html: `<div style="background-color: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.4); animation: pulse 2s infinite;"></div><div style="position: absolute; top: 20px; left: -20px; width: 60px; text-align: center; color: #1e293b; font-weight: bold; font-size: 10px; background: white; padding: 2px 4px; border-radius: 4px; border: 1px solid #e2e8f0;">📍 Mumbai</div>`,
-  iconSize: [16, 16],
-  iconAnchor: [8, 8]
+  className: 'shipment-marker',
+  html: '<span style="display:grid;place-items:center;width:28px;height:28px;border-radius:9px;background:#2563eb;border:2px solid #fff;box-shadow:0 4px 12px #2563eb88;color:#fff;font-size:14px">⌂</span>',
+  iconSize: [28, 28], iconAnchor: [14, 14],
 });
 
-interface Shipment {
-  id: string;
-  equipment_type: string;
-  description: string;
-  status: string;
-  risk_score: number;
-  current_lat: number | null;
-  current_lng: number | null;
-}
-
-// Generates points along a quadratic bezier curve to create a nice arc between two coordinates
-function getCurvePoints(start: [number, number], end: [number, number]): [number, number][] {
-  const points: [number, number][] = [];
-  const [lat1, lng1] = start;
-  const [lat2, lng2] = end;
-  
-  // Midpoint
-  const midLat = (lat1 + lat2) / 2;
-  const midLng = (lng1 + lng2) / 2;
-  
-  // Offset the control point upwards (latitude) based on the distance to create an arc
-  const distance = Math.sqrt(Math.pow(lat2 - lat1, 2) + Math.pow(lng2 - lng1, 2));
-  // A slight positive offset curves the line 'upwards' visually on the map
-  const controlLat = midLat + (distance * 0.2); 
-  const controlLng = midLng;
-  
-  // Generate 20 points along the curve
-  for (let i = 0; i <= 20; i++) {
-    const t = i / 20;
-    const lat = (1 - t) * (1 - t) * lat1 + 2 * (1 - t) * t * controlLat + t * t * lat2;
-    const lng = (1 - t) * (1 - t) * lng1 + 2 * (1 - t) * t * controlLng + t * t * lng2;
-    points.push([lat, lng]);
-  }
-  return points;
-}
-
-export default function SupplyChainMap({ shipments }: { shipments: Shipment[] }) {
+function FitVisible({ shipments, resetToken }: { shipments: MapShipment[]; resetToken: number }) {
+  const map = useMap();
   useEffect(() => {
-    // Add pulse animation styles for the destination marker
-    const style = document.createElement('style');
-    style.innerHTML = `
-      @keyframes pulse {
-        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
-        70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
-        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
-      }
-      .leaflet-container {
-        background: #0b1121;
-        font-family: inherit;
-      }
-      /* Style popups for dark mode natively */
-      .leaflet-popup-content-wrapper,
-      .leaflet-popup-tip {
-        background: #1e293b !important;
-        color: #f8fafc !important;
-        border-radius: 8px;
-      }
-      .leaflet-popup-content {
-        margin: 12px;
-      }
-    `;
-    document.head.appendChild(style);
-    return () => { document.head.removeChild(style); };
-  }, []);
+    const points: L.LatLngTuple[] = [];
+    shipments.forEach(s => {
+      if (s.current_lat != null && s.current_lng != null) points.push([s.current_lat, s.current_lng]);
+      if (s.destination_lat != null && s.destination_lng != null) points.push([s.destination_lat, s.destination_lng]);
+    });
+    if (points.length > 1) map.fitBounds(points, { padding: [48, 48], maxZoom: 5 });
+    else if (points.length === 1) map.setView(points[0], 5);
+  }, [map, shipments, resetToken]);
+  return null;
+}
+
+function FocusShipment({ shipment }: { shipment: MapShipment | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (shipment?.current_lat != null && shipment.current_lng != null) map.flyTo([shipment.current_lat, shipment.current_lng], 5, { duration: 0.6 });
+  }, [map, shipment]);
+  return null;
+}
+
+export default function SupplyChainMap({ shipments, selectedId, onSelect, showRoutes, resetToken }: {
+  shipments: MapShipment[]; selectedId: string | null; onSelect: (id: string) => void; showRoutes: boolean; resetToken: number;
+}) {
+  const visible = shipments.filter(s => s.current_lat != null && s.current_lng != null);
+  const selected = shipments.find(s => s.id === selectedId) || null;
+  const destination = visible.find(s => s.destination_lat != null && s.destination_lng != null);
 
   return (
-    <div style={{ height: '500px', width: '100%', borderRadius: '0.75rem', overflow: 'hidden' }}>
-      <MapContainer 
-        center={[25, 45]} 
-        zoom={3} 
-        style={{ height: '100%', width: '100%', zIndex: 0 }}
-        scrollWheelZoom={true}
-      >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        />
-        
-        {/* Destination Marker */}
-        <Marker position={[19.08, 72.88]} icon={destinationIcon}>
-          <Popup>
-            <div>
-              <strong>Project Site</strong><br/>
-              Mumbai, India
-            </div>
-          </Popup>
-        </Marker>
-
-        {/* Shipment Markers and Spline Curves */}
-        {shipments.map((ship) => {
-          if (!ship.current_lat || !ship.current_lng) return null;
-          const color = ship.risk_score >= 70 ? "#ef4444" : ship.risk_score >= 40 ? "#f59e0b" : "#10b981";
-          
-          const startCoord: [number, number] = [ship.current_lat, ship.current_lng];
-          const destCoord: [number, number] = [19.08, 72.88]; // Mumbai
-          const curvePath = getCurvePoints(startCoord, destCoord);
-
+    <div className="h-[520px] overflow-hidden rounded-2xl border border-white/10">
+      <MapContainer center={[20, 72]} zoom={3} className="h-full w-full" scrollWheelZoom>
+        <TileLayer attribution="&copy; OpenStreetMap &copy; CARTO" url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+        <FitVisible shipments={visible} resetToken={resetToken} />
+        <FocusShipment shipment={selected} />
+        {destination?.destination_lat != null && destination.destination_lng != null && (
+          <Marker position={[destination.destination_lat, destination.destination_lng]} icon={destinationIcon}>
+            <Tooltip direction="bottom" permanent>Project destination</Tooltip>
+          </Marker>
+        )}
+        {visible.map(shipment => {
+          const selectedRoute = shipment.id === selectedId;
+          const color = riskColor(shipment.risk_score);
+          const destinationPoint = shipment.destination_lat != null && shipment.destination_lng != null
+            ? [shipment.destination_lat, shipment.destination_lng] as [number, number] : null;
           return (
-            <div key={ship.id}>
-              {/* Spline line connecting shipment to destination */}
-              <Polyline 
-                positions={curvePath} 
-                color={color} 
-                weight={2} 
-                opacity={0.6}
-                dashArray="5, 8"
-              />
-              
-              <Marker 
-                position={startCoord}
-                icon={customIcon(color)}
-              >
-                <Popup>
-                  <div>
-                    <strong>{ship.equipment_type}</strong><br/>
-                    {ship.description}<br/>
-                    Risk Score: {ship.risk_score}%
-                  </div>
-                </Popup>
+            <div key={shipment.id}>
+              {showRoutes && destinationPoint && (
+                <Polyline positions={[[shipment.current_lat!, shipment.current_lng!], destinationPoint]} color={color}
+                  weight={selectedId && !selectedRoute ? 1 : selectedRoute ? 4 : 2} opacity={selectedId && !selectedRoute ? 0.15 : 0.75}
+                  dashArray={shipment.status === 'delivered' ? undefined : '8 8'} />
+              )}
+              <Marker position={[shipment.current_lat!, shipment.current_lng!]} icon={markerIcon(color, selectedRoute)} eventHandlers={{ click: () => onSelect(shipment.id) }}>
+                <Tooltip direction="top" offset={[0, -12]}>{shipment.equipment_type} · {Math.round(shipment.risk_score)}% risk</Tooltip>
               </Marker>
             </div>
           );

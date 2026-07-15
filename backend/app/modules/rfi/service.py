@@ -12,20 +12,55 @@ from app.modules.documents.search import find_similar_chunks
 from app.core.config import settings
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 
-async def process_chat_message(db: AsyncSession, session_id: str, user_message: str) -> str:
+def _retrieval_fallback(user_message: str, results) -> str:
+    """Return a helpful response when the hosted LLM is unavailable."""
+    normalized_message = user_message.strip().lower()
+    if (
+        re.fullmatch(r"(?:hi|hii+|hello|hey|good (?:morning|afternoon|evening))(?:[!.?\s]*)", normalized_message)
+        or re.search(r"\bhow (?:can|do) (?:you|u) assist\b", normalized_message)
+    ):
+        return (
+            "Hello! I can help you find requirements in the current project's "
+            "specifications and submittals. Ask about equipment capacity, clearances, "
+            "temperatures, schedules, or vendor submissions."
+        )
+
+    if not results:
+        return (
+            "The AI service is temporarily unavailable, and I could not find "
+            "a relevant passage in the uploaded project documents. Please try again later."
+        )
+
+    excerpts = []
+    for result in results[:2]:
+        location = f"Page {result.page_number}" if result.page_number else "Document excerpt"
+        if result.section_heading:
+            location += f", {result.section_heading}"
+        excerpts.append(f"- {result.chunk.chunk_text.strip()}  — *{location}*")
+
+    return (
+        "The AI service is temporarily unavailable, but I found these relevant "
+        "project-document excerpts:\n\n"
+        + "\n".join(excerpts)
+    )
+
+
+async def process_chat_message(db: AsyncSession, session_id: str, user_message: str, project_id: str, user_id: str) -> str:
     context_str = ""
     citations = []
+    results = []
 
     # --- 1. RAG retrieval using shared vector search ---
     try:
         results = await find_similar_chunks(
             db=db,
             query=user_message,
-            project_id=None,  # Search across all projects for now
+            project_id=project_id,
             top_k=5,
         )
 
@@ -81,10 +116,17 @@ Question: {user_message}"""
             ai_reply = response.text
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
-            ai_reply = f"I'm sorry, I encountered an error communicating with the AI service: {str(e)}"
+            ai_reply = _retrieval_fallback(user_message, results)
 
     # --- 3. Persist messages to DB (non-fatal if DB has issues) ---
     try:
+        session_result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+        chat_session = session_result.scalars().first()
+        if chat_session is None:
+            chat_session = ChatSession(id=session_id, project_id=project_id, user_id=user_id)
+            db.add(chat_session)
+        elif chat_session.project_id != project_id or chat_session.user_id != user_id:
+            raise ValueError("Chat session does not belong to the current user and project")
         user_msg = ChatMessage(session_id=session_id, role="user", content=user_message)
         ai_msg = ChatMessage(
             session_id=session_id,
@@ -97,5 +139,6 @@ Question: {user_message}"""
         await db.commit()
     except Exception as e:
         logger.warning(f"Failed to persist chat messages to DB (non-fatal): {e}")
+        await db.rollback()
 
     return ai_reply

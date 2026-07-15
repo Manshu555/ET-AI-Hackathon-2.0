@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from 'react';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiUpload } from '@/lib/api-client';
 import toast from 'react-hot-toast';
 
 export default function UploadPage() {
@@ -57,23 +57,7 @@ export default function UploadPage() {
       formData.append('file', file);
       formData.append('doc_type', docType);
 
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
-      const token = localStorage.getItem('auth_token');
-      const headers: any = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(`${API_BASE}/documents`, {
-        method: 'POST',
-        headers,
-        body: formData,
-      });
-
-      if (!res.ok) {
-         const errData = await res.json().catch(()=>({}));
-         throw new Error(errData.detail || 'Upload failed');
-      }
-
-      const doc = await res.json();
+      const doc = await apiUpload<any>('/documents', formData);
       setStatus('');
       setSuccess(true);
       setUploading(false);
@@ -118,7 +102,6 @@ export default function UploadPage() {
                 <option value="specification">📋 Specification</option>
                 <option value="submittal">📄 Vendor Submittal</option>
                 <option value="drawing">📐 Drawing</option>
-                <option value="schedule">📅 Schedule (CSV)</option>
                 <option value="rfi">❓ RFI Document</option>
               </select>
             </div>
@@ -127,7 +110,7 @@ export default function UploadPage() {
               <input
                 type="file"
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                accept=".pdf,.docx,.xlsx,.csv,.png,.jpg"
+                accept="application/pdf,.pdf"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
               {file ? (
@@ -142,7 +125,7 @@ export default function UploadPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                   </svg>
                   <p className="text-sm text-gray-400">Click or drag file to upload</p>
-                  <p className="text-xs text-gray-600 mt-1">PDF, DOCX, XLSX, CSV, Images</p>
+                  <p className="text-xs text-gray-600 mt-1">PDF documents up to 25 MB</p>
                 </div>
               )}
             </div>

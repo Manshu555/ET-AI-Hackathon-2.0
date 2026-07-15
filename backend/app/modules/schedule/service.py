@@ -22,6 +22,8 @@ async def import_schedule_csv(db: AsyncSession, project_id: str, csv_content: st
     imported = 0
     skipped = 0
 
+    pending_dependencies: list[tuple[ScheduleTask, str | None]] = []
+    wbs_to_id: dict[str, str] = {}
     for row in reader:
         try:
             task = ScheduleTask(
@@ -38,10 +40,26 @@ async def import_schedule_csv(db: AsyncSession, project_id: str, csv_content: st
                 status=row.get("status", "not_started"),
             )
             db.add(task)
+            await db.flush()
+            if task.wbs_code:
+                wbs_to_id[task.wbs_code] = task.id
+            pending_dependencies.append((task, row.get("dependencies", row.get("Dependencies"))))
             imported += 1
         except Exception as e:
             logger.warning(f"Skipping row: {e}")
             skipped += 1
+
+    for task, raw_dependencies in pending_dependencies:
+        if not raw_dependencies:
+            continue
+        dependency_refs = json.loads(raw_dependencies)
+        if not isinstance(dependency_refs, list):
+            raise ValueError("Dependencies must be a JSON list")
+        resolved = [wbs_to_id.get(str(ref), str(ref)) for ref in dependency_refs]
+        unknown = [ref for ref in resolved if ref not in wbs_to_id.values()]
+        if unknown:
+            raise ValueError(f"Unknown dependencies for '{task.task_name}': {', '.join(unknown)}")
+        task.dependencies = json.dumps(resolved)
 
     await db.commit()
     return {"imported_count": imported, "skipped_count": skipped, "message": f"Imported {imported} tasks, skipped {skipped}"}

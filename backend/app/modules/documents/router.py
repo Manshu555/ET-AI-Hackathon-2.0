@@ -5,11 +5,13 @@ Provides upload, status check, list, and chunk-inspection endpoints.
 Supports both Celery-based async processing and inline fallback
 for development without Docker/Redis.
 """
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Header, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func as sa_func
-from app.db.base import get_project_db, get_db
+from app.db.base import get_db
+from app.modules.auth.dependencies import get_authorized_project_id, get_current_user
+from app.modules.auth.models import User
 from app.modules.documents import schemas, models
 from app.shared.storage.s3_client import s3_client
 import uuid
@@ -39,8 +41,9 @@ def _try_celery_dispatch(document_id: str) -> bool:
 async def upload_document(
     file: UploadFile = File(...),
     doc_type: str = Form(...),
-    project_id: str | None = Header(default=None),
-    db: AsyncSession = Depends(get_project_db)
+    project_id: str = Depends(get_authorized_project_id),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Upload a document to the project.
@@ -49,16 +52,19 @@ async def upload_document(
     to extract text, chunk, and generate embeddings. If Celery is unavailable,
     processing happens inline (slower but works without Docker).
     """
-    # Default to the first project if no project-id header is sent
-    if not project_id:
-        from app.modules.projects.models import Project
-        proj_res = await db.execute(select(Project).limit(1))
-        proj = proj_res.scalars().first()
-        project_id = proj.id if proj else "default"
+    allowed_extensions = {".pdf"}
+    filename = file.filename or ""
+    import os
+    extension = os.path.splitext(filename.lower())[1]
+    if extension not in allowed_extensions:
+        raise HTTPException(status_code=415, detail="Only PDF documents are supported on this endpoint")
 
     # Read file content before any storage attempt (prevents closed-file issues)
     object_name = f"{project_id}/{uuid.uuid4()}_{file.filename}"
-    file_bytes = await file.read()
+    max_upload_bytes = 25 * 1024 * 1024
+    file_bytes = await file.read(max_upload_bytes + 1)
+    if len(file_bytes) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Document exceeds the 25 MB upload limit")
 
     try:
         import io
@@ -101,23 +107,22 @@ async def upload_document(
 
 @router.get("", response_model=schemas.DocumentListResponse)
 async def list_documents(
-    project_id: str = Header(None),
+    project_id: str = Depends(get_authorized_project_id),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     List all documents, optionally filtered by project_id.
     """
     query = select(models.Document).order_by(models.Document.created_at.desc())
-    if project_id:
-        query = query.where(models.Document.project_id == project_id)
+    query = query.where(models.Document.project_id == project_id)
 
     result = await db.execute(query)
     docs = result.scalars().all()
 
     # Get total count
     count_query = select(sa_func.count(models.Document.id))
-    if project_id:
-        count_query = count_query.where(models.Document.project_id == project_id)
+    count_query = count_query.where(models.Document.project_id == project_id)
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
@@ -128,9 +133,9 @@ async def list_documents(
 
 
 @router.get("/{document_id}", response_model=schemas.DocumentResponse)
-async def get_document(document_id: str, db: AsyncSession = Depends(get_project_db)):
+async def get_document(document_id: str, project_id: str = Depends(get_authorized_project_id), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get a single document by ID."""
-    result = await db.execute(select(models.Document).where(models.Document.id == document_id))
+    result = await db.execute(select(models.Document).where(models.Document.id == document_id, models.Document.project_id == project_id))
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -138,9 +143,9 @@ async def get_document(document_id: str, db: AsyncSession = Depends(get_project_
 
 
 @router.get("/{document_id}/status", response_model=schemas.DocumentStatusResponse)
-async def get_document_status(document_id: str, db: AsyncSession = Depends(get_project_db)):
+async def get_document_status(document_id: str, project_id: str = Depends(get_authorized_project_id), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Check the ingestion status of a document."""
-    result = await db.execute(select(models.Document).where(models.Document.id == document_id))
+    result = await db.execute(select(models.Document).where(models.Document.id == document_id, models.Document.project_id == project_id))
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -148,13 +153,13 @@ async def get_document_status(document_id: str, db: AsyncSession = Depends(get_p
 
 
 @router.get("/{document_id}/chunks", response_model=list[schemas.DocumentChunkResponse])
-async def get_document_chunks(document_id: str, db: AsyncSession = Depends(get_db)):
+async def get_document_chunks(document_id: str, project_id: str = Depends(get_authorized_project_id), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """
     List all chunks for a document. Useful for debugging ingestion and
     verifying that page numbers and section headings are correctly assigned.
     """
     # Verify document exists
-    doc_result = await db.execute(select(models.Document).where(models.Document.id == document_id))
+    doc_result = await db.execute(select(models.Document).where(models.Document.id == document_id, models.Document.project_id == project_id))
     doc = doc_result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")

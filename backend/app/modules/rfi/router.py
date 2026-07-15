@@ -5,7 +5,7 @@ from app.db.base import get_db
 from app.modules.rfi.models import Rfi, ChatSession, ChatMessage
 from app.modules.rfi.schemas import ChatRequest, ChatResponse, RfiCreate, RfiResponse, RfiResolveRequest
 from app.modules.rfi.service import process_chat_message
-from app.modules.auth.dependencies import get_current_user
+from app.modules.auth.dependencies import get_authorized_project_id, get_current_user
 from app.modules.auth.models import User
 
 router = APIRouter()
@@ -16,9 +16,10 @@ async def ask_question(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    project_id: str = Depends(get_authorized_project_id),
 ):
     """Ask a question against the project document corpus with RAG retrieval."""
-    reply = await process_chat_message(db, request.session_id, request.message)
+    reply = await process_chat_message(db, request.session_id, request.message, project_id, current_user.id)
     return ChatResponse(reply=reply)
 
 
@@ -26,9 +27,11 @@ async def ask_question(
 async def chat(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project_id: str = Depends(get_authorized_project_id),
 ):
-    """Legacy chat endpoint (no auth required for demo)."""
-    reply = await process_chat_message(db, request.session_id, request.message)
+    """Ask a project-scoped question and preserve the auditable chat session."""
+    reply = await process_chat_message(db, request.session_id, request.message, project_id, current_user.id)
     return ChatResponse(reply=reply)
 
 
@@ -54,13 +57,13 @@ async def create_rfi(
 
 @router.get("", response_model=list[RfiResponse])
 async def list_rfis(
-    project_id: str = Header(None),
+    project_id: str = Depends(get_authorized_project_id),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List all RFIs, optionally filtered by project."""
     query = select(Rfi).order_by(Rfi.created_at.desc())
-    if project_id:
-        query = query.where(Rfi.project_id == project_id)
+    query = query.where(Rfi.project_id == project_id)
     result = await db.execute(query)
     return result.scalars().all()
 

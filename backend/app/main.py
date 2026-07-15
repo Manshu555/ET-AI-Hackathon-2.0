@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from sqlalchemy import inspect, text, select
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
@@ -54,6 +55,7 @@ async def startup():
     from app.db.base import engine, Base
     # Import all models so Base.metadata knows about them
     from app.modules.auth import models as auth_models  # noqa
+    from app.modules.projects import models as project_models  # noqa
     from app.modules.documents import models as doc_models  # noqa
     from app.modules.compliance import models as comp_models  # noqa
     from app.modules.schedule import models as sched_models  # noqa
@@ -62,6 +64,32 @@ async def startup():
     
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # `create_all` only creates missing tables; it does not add columns to
+        # an existing SQLite database. Keep local/demo databases created by an
+        # older version compatible with the current Document model.
+        if conn.dialect.name == "sqlite":
+            document_columns = await conn.run_sync(
+                lambda sync_conn: {column["name"] for column in inspect(sync_conn).get_columns("documents")}
+            )
+            if "page_count" not in document_columns:
+                await conn.execute(text("ALTER TABLE documents ADD COLUMN page_count INTEGER"))
+
+    # One-time compatibility bootstrap for the original single-project demo
+    # database. New projects receive membership at creation time.
+    from app.db.base import async_session_maker
+    from app.modules.auth.models import User
+    from app.modules.projects.models import Project, ProjectMember
+    async with async_session_maker() as session:
+        projects = (await session.execute(select(Project.id))).scalars().all()
+        users = (await session.execute(select(User.id))).scalars().all()
+        if len(projects) == 1:
+            project_id = projects[0]
+            existing = set((await session.execute(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id))).scalars())
+            for user_id in users:
+                if user_id not in existing:
+                    session.add(ProjectMember(project_id=project_id, user_id=user_id))
+            await session.commit()
     print("[OK] Database tables created/verified")
 
 

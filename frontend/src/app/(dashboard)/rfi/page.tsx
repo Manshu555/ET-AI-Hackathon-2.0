@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { apiFetch } from '@/lib/api-client';
 
 export default function RfiChatPage() {
   const [messages, setMessages] = useState<{role: string, content: string}[]>([
@@ -25,12 +26,10 @@ export default function RfiChatPage() {
     
     try {
       // session_id hardcoded for demonstration
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'}/rfi/chat`, {
+      const data = await apiFetch<{ reply: string }>('/rfi/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: "demo-session-123", message: currentInput })
       });
-      const data = await res.json();
       setMessages(prev => [...prev, { role: 'ai', content: data.reply || 'Error: No response' }]);
     } catch (err) {
       console.error(err);

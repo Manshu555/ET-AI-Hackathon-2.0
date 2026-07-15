@@ -5,7 +5,7 @@ from app.db.base import get_db
 from app.modules.compliance.models import Deviation, Submittal, Specification
 from app.modules.compliance.service import run_compliance_check
 from app.modules.compliance import schemas
-from app.modules.auth.dependencies import get_current_user
+from app.modules.auth.dependencies import get_authorized_project_id, get_current_user
 from app.modules.auth.models import User
 
 router = APIRouter()
@@ -122,9 +122,15 @@ async def get_submittal_deviations(
 @router.get("/deviations", response_model=list[schemas.DeviationResponse])
 async def get_all_deviations(
     db: AsyncSession = Depends(get_db),
+    project_id: str = Depends(get_authorized_project_id),
+    current_user: User = Depends(get_current_user),
 ):
     """Get all deviations across the project."""
-    result = await db.execute(select(Deviation))
+    result = await db.execute(
+        select(Deviation)
+        .join(Submittal, Deviation.submittal_id == Submittal.id)
+        .where(Submittal.project_id == project_id)
+    )
     deviations = result.scalars().all()
     dev_list = []
     for d in deviations:

@@ -9,7 +9,7 @@ from app.modules.schedule.models import ScheduleTask, ScheduleRiskScore
 from app.modules.supply_chain.models import Shipment
 from app.modules.commissioning.models import CommissioningRun
 from app.modules.dashboard.models import Notification
-from app.modules.auth.dependencies import get_current_user
+from app.modules.auth.dependencies import get_authorized_project_id, get_current_user
 from app.modules.auth.models import User
 
 router = APIRouter()
@@ -17,42 +17,43 @@ router = APIRouter()
 
 @router.get("/summary")
 async def get_dashboard_summary(
-    project_id: str = Header(None),
+    project_id: str = Depends(get_authorized_project_id),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Aggregated dashboard payload — cross-module state in one call."""
 
     # Open deviations
-    dev_query = select(func.count(Deviation.id)).where(Deviation.status == "open")
+    dev_query = select(func.count(Deviation.id)).join(Submittal).where(Submittal.project_id == project_id, Deviation.status == "open")
     dev_res = await db.execute(dev_query)
     open_deviations = dev_res.scalar() or 0
 
     critical_query = select(func.count(Deviation.id)).where(
-        Deviation.status == "open", Deviation.severity == "Critical"
+        Submittal.project_id == project_id, Deviation.status == "open", Deviation.severity == "Critical"
     )
     critical_res = await db.execute(critical_query)
     critical_deviations = critical_res.scalar() or 0
 
     # Pending RFIs
     try:
-        rfi_query = select(func.count(Rfi.id)).where(Rfi.status == "open")
+        rfi_query = select(func.count(Rfi.id)).where(Rfi.project_id == project_id, Rfi.status == "open")
         rfi_res = await db.execute(rfi_query)
         pending_rfis = rfi_res.scalar() or 0
     except Exception:
         pending_rfis = 0
 
     # Submittals
-    sub_approved_q = select(func.count(Submittal.id)).where(Submittal.status == "approved")
+    sub_approved_q = select(func.count(Submittal.id)).where(Submittal.project_id == project_id, Submittal.status == "approved")
     sub_approved_res = await db.execute(sub_approved_q)
     approved_submittals = sub_approved_res.scalar() or 0
 
-    sub_total_q = select(func.count(Submittal.id))
+    sub_total_q = select(func.count(Submittal.id)).where(Submittal.project_id == project_id)
     sub_total_res = await db.execute(sub_total_q)
     total_submittals = sub_total_res.scalar() or 0
 
     # Schedule risk — top 5 riskiest tasks
     try:
-        risk_query = select(ScheduleRiskScore).order_by(desc(ScheduleRiskScore.risk_score)).limit(5)
+        risk_query = select(ScheduleRiskScore).join(ScheduleTask).where(ScheduleTask.project_id == project_id).order_by(desc(ScheduleRiskScore.risk_score)).limit(5)
         risk_res = await db.execute(risk_query)
         risk_scores = risk_res.scalars().all()
 
@@ -76,7 +77,7 @@ async def get_dashboard_summary(
 
     # At-risk shipments
     try:
-        ship_query = select(func.count(Shipment.id)).where(Shipment.risk_score >= 40)
+        ship_query = select(func.count(Shipment.id)).where(Shipment.project_id == project_id, Shipment.risk_score >= 40)
         ship_res = await db.execute(ship_query)
         at_risk_shipments = ship_res.scalar() or 0
     except Exception:
@@ -84,7 +85,7 @@ async def get_dashboard_summary(
 
     # Total shipments
     try:
-        ship_total_q = select(func.count(Shipment.id))
+        ship_total_q = select(func.count(Shipment.id)).where(Shipment.project_id == project_id)
         ship_total_res = await db.execute(ship_total_q)
         total_shipments = ship_total_res.scalar() or 0
     except Exception:
@@ -112,9 +113,13 @@ async def get_dashboard_summary(
 
 
 @router.get("/stats")
-async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
+async def get_dashboard_stats(
+    project_id: str = Depends(get_authorized_project_id),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Legacy stats endpoint for backward compatibility."""
-    summary = await get_dashboard_summary(project_id=None, db=db)
+    summary = await get_dashboard_summary(project_id=project_id, db=db, current_user=current_user)
     return {
         "open_deviations": summary["open_deviations"],
         "pending_rfis": summary["pending_rfis"],

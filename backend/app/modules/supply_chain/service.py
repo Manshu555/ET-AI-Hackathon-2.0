@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
 from app.modules.supply_chain.models import Shipment, ShipmentEvent
+from app.modules.compliance.models import Vendor
 from app.modules.supply_chain.risk import compute_shipment_risk, get_risk_status, suggest_mitigations
 from datetime import date
 import logging
@@ -81,6 +82,11 @@ async def get_map_data(db: AsyncSession, project_id: str) -> list:
         )
         latest_event = events_result.scalars().first()
 
+        vendor_name = None
+        if s.vendor_id:
+            vendor_result = await db.execute(select(Vendor.name).where(Vendor.id == s.vendor_id))
+            vendor_name = vendor_result.scalar_one_or_none()
+
         current_lat = latest_event.lat if latest_event and latest_event.lat else s.origin_lat
         current_lng = latest_event.lng if latest_event and latest_event.lng else s.origin_lng
 
@@ -95,6 +101,10 @@ async def get_map_data(db: AsyncSession, project_id: str) -> list:
             "destination_lat": s.destination_lat,
             "destination_lng": s.destination_lng,
             "required_on_site": s.required_on_site,
+            "vendor_name": vendor_name,
+            "latest_event_type": latest_event.event_type if latest_event else None,
+            "latest_event_notes": latest_event.notes if latest_event else None,
+            "latest_event_at": latest_event.occurred_at if latest_event else None,
         })
 
     return map_data

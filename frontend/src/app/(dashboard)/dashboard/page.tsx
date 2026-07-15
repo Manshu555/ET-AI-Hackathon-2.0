@@ -21,18 +21,7 @@ export default function Dashboard() {
   useEffect(() => {
     apiFetch<DashboardData>('/dashboard/summary')
       .then(setData)
-      .catch(() => {
-        // Fallback to legacy endpoint
-        fetch('http://localhost:8000/api/v1/dashboard/stats')
-          .then(res => res.json())
-          .then(d => setData({
-            open_deviations: d.open_deviations || 0, critical_deviations: 0,
-            pending_rfis: d.pending_rfis || 0, approved_submittals: d.approved_submittals || 0,
-            total_submittals: 0, schedule_risk: d.schedule_risk || [],
-            at_risk_shipments: 0, total_shipments: 0, active_commissioning: 0,
-          }))
-          .catch(() => {});
-      })
+      .catch(error => console.error('Failed to load project dashboard', error))
       .finally(() => setLoading(false));
   }, []);
 

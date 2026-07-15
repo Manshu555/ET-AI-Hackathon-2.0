@@ -57,6 +57,10 @@ class MapShipmentResponse(BaseModel):
     destination_lat: Optional[float] = None
     destination_lng: Optional[float] = None
     required_on_site: Optional[date] = None
+    vendor_name: Optional[str] = None
+    latest_event_type: Optional[str] = None
+    latest_event_notes: Optional[str] = None
+    latest_event_at: Optional[datetime] = None
 
 
 class AtRiskShipmentResponse(BaseModel):

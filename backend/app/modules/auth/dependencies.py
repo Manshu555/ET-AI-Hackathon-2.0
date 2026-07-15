@@ -3,7 +3,7 @@ Auth dependencies for FastAPI route protection.
 - get_current_user: decodes JWT, loads user from DB, attaches to request
 - require_role(*roles): wraps routes to enforce RBAC
 """
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.security import ALGORITHM
 from app.db.base import get_db
 from app.modules.auth.models import User
+from app.modules.projects.models import ProjectMember
 from typing import Callable
 
 security_scheme = HTTPBearer(auto_error=False)
@@ -64,3 +65,20 @@ def require_role(*roles: str) -> Callable:
             )
         return current_user
     return _check
+
+
+async def get_authorized_project_id(
+    project_id: str = Header(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """Require that the authenticated user belongs to the requested project."""
+    membership = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == current_user.id,
+        )
+    )
+    if membership.scalars().first() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this project")
+    return project_id
