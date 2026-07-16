@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from 'react';
+import { apiFetch } from '@/lib/api-client';
 
 interface Deviation {
   id: string;
@@ -17,8 +18,7 @@ export default function CompliancePage() {
   const [filter, setFilter] = useState<string>('all');
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/v1/compliance/deviations')
-      .then(res => res.json())
+    apiFetch<Deviation[]>('/compliance/deviations')
       .then(data => {
         setDeviations(data);
         setLoading(false);
@@ -31,15 +31,11 @@ export default function CompliancePage() {
 
   const handleAction = async (id: string, action: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/compliance/deviations/${id}`, {
+      const updated = await apiFetch<Deviation>(`/compliance/deviations/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, note: `${action} by user at ${new Date().toLocaleString()}` }),
+        body: JSON.stringify({ action, note: `${action.charAt(0).toUpperCase() + action.slice(1)} by user` }),
       });
-      if (res.ok) {
-        const updated = await res.json();
-        setDeviations(prev => prev.map(d => d.id === id ? { ...d, status: updated.status, resolution_note: updated.resolution_note } : d));
-      }
+      setDeviations(prev => prev.map(d => d.id === id ? { ...d, status: updated.status, resolution_note: updated.resolution_note } : d));
     } catch (e) {
       console.error(e);
     }

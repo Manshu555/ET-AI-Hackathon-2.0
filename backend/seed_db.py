@@ -20,7 +20,7 @@ from app.shared.ai.embedding_client import get_embedding
 
 
 async def seed():
-    print("🔄 Seeding database...")
+    print("[*] Seeding database...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
@@ -203,18 +203,18 @@ async def seed():
 
         # ── Notifications ─────────────────────────────────────
         notif1 = Notification(project_id=project.id, user_id=pm.id, type="deviation",
-                              message="🚨 Critical deviation detected: Chiller capacity 450kW vs required 500kW",
+                              message="[CRITICAL] Deviation detected: Chiller capacity 450kW vs required 500kW",
                               related_entity_id=dev1.id)
         notif2 = Notification(project_id=project.id, user_id=pm.id, type="shipment_risk",
-                              message="⚠️ Switchgear shipment at 91% risk — held at Suez Canal",
+                              message="[WARNING] Switchgear shipment at 91% risk - held at Suez Canal",
                               related_entity_id=ship4.id)
         notif3 = Notification(project_id=project.id, type="schedule_risk",
-                              message="📊 HVAC Chiller Installation task at 78% delay risk — workforce at 60%",
+                              message="[ALERT] HVAC Chiller Installation task at 78% delay risk - workforce at 60%",
                               related_entity_id=tasks[4].id)
         session.add_all([notif1, notif2, notif3])
 
         await session.commit()
-        print("✅ Database successfully seeded with all module data.")
+        print("[OK] Database successfully seeded with all module data.")
         print(f"   Project: {project.name}")
         print(f"   Users: admin@epc-intel.com / admin, pm@epc-intel.com / pm123")
         print(f"   Tasks: {len(tasks)} schedule tasks")

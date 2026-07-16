@@ -2,7 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch, setAccessToken, getAccessToken } from '@/lib/api-client';
+import { apiFetch, setAccessToken, setProjectId } from '@/lib/api-client';
+import toast from 'react-hot-toast';
 
 const API_BASE = typeof window !== 'undefined'
   ? (process.env.NEXT_PUBLIC_AUTH_API_URL || 'http://localhost:5000/api/v1')
@@ -68,17 +69,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (stored && storedToken) {
       setUser(JSON.parse(stored));
       setAccessToken(storedToken);
+      apiFetch<Array<{ id: string }>>('/projects')
+        .then(projects => setProjectId(projects[0]?.id || null))
+        .catch(() => setProjectId(null));
     }
     setIsLoading(false);
   }, []);
 
-  const _saveSession = (data: { access_token: string; user: User }) => {
+  const _saveSession = async (data: { access_token: string; user: User }) => {
     setAccessToken(data.access_token);
     setUser(data.user);
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('epc_user', JSON.stringify(data.user));
       sessionStorage.setItem('epc_token', data.access_token);
     }
+    const projects = await apiFetch<Array<{ id: string }>>('/projects');
+    setProjectId(projects[0]?.id || null);
   };
 
   const login = async (email: string, password: string) => {
@@ -91,11 +97,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Login failed' }));
+      toast.error(err.detail || 'Login failed');
       throw new Error(err.detail || 'Login failed');
     }
 
     const data = await res.json();
-    _saveSession(data);
+    await _saveSession(data);
   };
 
   const register = async (name: string, email: string, password: string, role: string) => {
@@ -107,6 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Registration failed' }));
+      toast.error(err.detail || 'Registration failed');
       throw new Error(err.detail || 'Registration failed');
     }
 
@@ -142,11 +150,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
             if (!res.ok) {
               const err = await res.json().catch(() => ({ detail: 'Google auth failed' }));
+              toast.error(err.detail || 'Google auth failed');
               throw new Error(err.detail || 'Google auth failed');
             }
 
             const data = await res.json();
-            _saveSession(data);
+            await _saveSession(data);
             resolve();
           } catch (err: any) {
             reject(err);
@@ -159,6 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     setAccessToken(null);
+    setProjectId(null);
     setUser(null);
     if (typeof window !== 'undefined') {
       sessionStorage.removeItem('epc_user');

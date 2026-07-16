@@ -11,7 +11,6 @@ Computes six features per task as described in Section 10.3:
 from datetime import date, timedelta
 from typing import List, Optional
 import json
-import random
 
 
 def compute_lead_time_variance(planned_start: Optional[date], planned_end: Optional[date],
@@ -58,14 +57,14 @@ def compute_workforce_fill_rate(availability: Optional[float]) -> float:
 
 def compute_weather_severity() -> float:
     """7-day weather severity index at project location.
-    Stubbed: returns a random value for hackathon demo."""
-    return round(random.uniform(0.0, 0.4), 2)
+    Returns zero until a versioned weather feed is integrated."""
+    return 0.0
 
 
 def compute_vendor_otd_history() -> float:
     """Vendor on-time delivery history.
-    Stubbed: returns a random value for hackathon demo."""
-    return round(random.uniform(0.0, 0.3), 2)
+    Returns zero until vendor performance data is integrated."""
+    return 0.0
 
 
 def compute_task_progress_ratio(planned_start: Optional[date], planned_end: Optional[date],

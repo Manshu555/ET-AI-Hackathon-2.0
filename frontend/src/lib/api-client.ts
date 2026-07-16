@@ -1,13 +1,32 @@
+import toast from 'react-hot-toast';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 let accessToken: string | null = null;
+let projectId: string | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
 
 export function getAccessToken(): string | null {
+  if (!accessToken && typeof window !== 'undefined') {
+    accessToken = sessionStorage.getItem('epc_token');
+  }
   return accessToken;
+}
+
+export function setProjectId(id: string | null) {
+  projectId = id;
+  if (typeof window !== 'undefined') {
+    if (id) sessionStorage.setItem('epc_project_id', id);
+    else sessionStorage.removeItem('epc_project_id');
+  }
+}
+
+function getProjectId(): string | null {
+  if (!projectId && typeof window !== 'undefined') projectId = sessionStorage.getItem('epc_project_id');
+  return projectId;
 }
 
 export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -20,6 +39,8 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+  const activeProjectId = getProjectId();
+  if (activeProjectId && !headers['project-id']) headers['project-id'] = activeProjectId;
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -33,13 +54,18 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
     if (refreshed) {
       headers['Authorization'] = `Bearer ${getAccessToken()}`;
       const retry = await fetch(`${API_BASE}${path}`, { ...opts, headers, credentials: 'include' });
-      if (!retry.ok) throw await retry.json().catch(() => ({ error: { message: 'Request failed' } }));
+      if (!retry.ok) {
+        const errObj = await retry.json().catch(() => ({ error: { message: 'Request failed' } }));
+        toast.error(errObj.detail || errObj.error?.message || 'Request failed');
+        throw errObj;
+      }
       return retry.json();
     }
   }
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    toast.error(error.detail || error.error?.message || `Error ${res.status}`);
     throw error;
   }
 
@@ -65,12 +91,17 @@ export async function refreshAccessToken(): Promise<boolean> {
 }
 
 // Convenience for file uploads (no Content-Type — browser sets multipart boundary)
-export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
+export async function apiUpload<T>(path: string, formData: FormData, opts: RequestInit = {}): Promise<T> {
   const token = getAccessToken();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...((opts.headers as Record<string, string>) || {}),
+  };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const activeProjectId = getProjectId();
+  if (activeProjectId && !headers['project-id']) headers['project-id'] = activeProjectId;
 
   const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
     method: 'POST',
     body: formData,
     headers,

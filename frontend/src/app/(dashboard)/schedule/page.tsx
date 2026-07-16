@@ -1,6 +1,7 @@
 "use client";
-import { useState, useEffect } from 'react';
-import { apiFetch } from '@/lib/api-client';
+import { useState, useEffect, useRef } from 'react';
+import { apiFetch, apiUpload } from '@/lib/api-client';
+import toast from 'react-hot-toast';
 
 interface RiskTask {
   task_id: string;
@@ -16,18 +17,60 @@ interface RiskTask {
 export default function SchedulePage() {
   const [tasks, setTasks] = useState<RiskTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [file, setFile] = useState<File | null>(null);
+  const [projectId, setProjectId] = useState('');
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/v1/dashboard/summary')
-      .then(res => res.json())
+    apiFetch<any>('/dashboard/summary')
       .then(data => {
         if (data.schedule_risk) {
           setTasks(data.schedule_risk);
         }
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        console.error(err);
+        setLoading(false);
+      });
   }, []);
+
+  useEffect(() => {
+    apiFetch<Array<{ id: string }>>('/projects')
+      .then(projects => setProjectId(projects[0]?.id || ''))
+      .catch(err => console.error('Failed to load projects', err));
+  }, []);
+
+  const handleImport = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!file || !projectId) {
+      toast.error('Select a CSV file and ensure a project is available.');
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const result = await apiUpload<{ imported_count: number; skipped_count: number }>(
+        '/schedule/import',
+        formData,
+        { headers: { 'project-id': projectId } },
+      );
+      const riskTasks = await apiFetch<RiskTask[]>('/schedule/risk', {
+        headers: { 'project-id': projectId },
+      });
+      setTasks(riskTasks);
+      setFile(null);
+      toast.success(`Imported ${result.imported_count} schedule tasks.`);
+    } catch (err: any) {
+      console.error('Schedule import failed', err);
+      toast.error(err?.detail || err?.error?.message || 'Schedule import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const getStatusBadge = (status: string) => {
     const styles: Record<string, string> = {
@@ -59,6 +102,38 @@ export default function SchedulePage() {
           <p className="text-gray-400 mt-1 text-sm">Predictive delay-risk scoring with contributing factor analysis</p>
         </div>
       </div>
+
+      <form onSubmit={handleImport} className="glass rounded-2xl p-5 mb-8 flex flex-col gap-3 md:flex-row md:items-center">
+        <div className="flex-1">
+          <label htmlFor="schedule-file" className="block text-sm font-medium mb-1">Import schedule CSV</label>
+          <p className="text-xs text-gray-400">Upload a CSV with task names, dates, dependencies, and workforce availability.</p>
+        </div>
+        <input
+          id="schedule-file"
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          onChange={event => setFile(event.target.files?.[0] || null)}
+          className="sr-only"
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="rounded-lg border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
+        >
+          Choose CSV File
+        </button>
+        <span className="max-w-52 truncate text-sm text-gray-300" title={file?.name}>
+          {file ? file.name : 'No file selected'}
+        </span>
+        <button
+          type="submit"
+          disabled={!file || !projectId || importing}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-gray-600"
+        >
+          {importing ? 'Importing...' : 'Import CSV'}
+        </button>
+      </form>
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">

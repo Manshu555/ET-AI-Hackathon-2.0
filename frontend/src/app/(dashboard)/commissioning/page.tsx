@@ -113,6 +113,46 @@ export default function CommissioningPage() {
     }
   };
 
+  const downloadPDF = async () => {
+    if (!activeRun) return;
+    try {
+      const jsPDFModule = await import('jspdf');
+      const autoTableModule = await import('jspdf-autotable');
+      const jsPDF = jsPDFModule.default;
+      const autoTable = autoTableModule.default;
+      const doc = new jsPDF();
+      
+      doc.setFontSize(20);
+      doc.text("Commissioning Test Report", 14, 22);
+      
+      doc.setFontSize(12);
+      doc.text(`Template: ${activeRun.template_name}`, 14, 32);
+      doc.text(`Standard: ${activeRun.standard}`, 14, 40);
+      doc.text(`Status: ${activeRun.status.toUpperCase()}`, 14, 48);
+      
+      doc.text(`Passed: ${activeRun.pass_count} | Failed: ${activeRun.fail_count} | Pending: ${activeRun.pending_count}`, 14, 58);
+      
+      const tableColumn = ["Step", "Description", "Expected", "Actual", "Result"];
+      const tableRows = activeRun.steps.map(step => [
+        step.step_number.toString(),
+        step.description,
+        `${step.expected_min !== null ? step.expected_min : '*'} - ${step.expected_max !== null ? step.expected_max : '*'} ${step.expected_unit || ''}`,
+        step.actual_value !== null ? `${step.actual_value} ${step.expected_unit || ''}` : 'N/A',
+        step.status.toUpperCase()
+      ]);
+      
+      autoTable(doc, {
+        head: [tableColumn],
+        body: tableRows,
+        startY: 65,
+      });
+      
+      doc.save(`commissioning_report_${activeRun.id}.pdf`);
+    } catch (error) {
+      console.error("Failed to generate PDF", error);
+    }
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-8">
@@ -233,7 +273,7 @@ export default function CommissioningPage() {
               <p className="text-sm text-gray-400 mb-4">
                 {activeRun.pass_count} passed, {activeRun.fail_count} failed out of {activeRun.steps.length} steps
               </p>
-              <button className="px-6 py-2.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors">
+              <button onClick={downloadPDF} className="px-6 py-2.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors">
                 Download Report (PDF)
               </button>
             </div>

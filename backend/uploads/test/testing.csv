@@ -1,0 +1,6 @@
+wbs_code,task_name,planned_start,planned_end,actual_start,actual_end,duration_days,dependencies,workforce_availability,status
+1.1,Foundation Works,2026-07-01,2026-07-14,2026-07-02,,13,,90,in_progress
+1.2,Structural Steel Installation,2026-07-15,2026-07-31,,,16,"[""1.1""]",75,not_started
+2.1,Electrical Switchgear Installation,2026-08-01,2026-08-20,,,19,"[""1.2""]",70,not_started
+2.2,HVAC Chiller Installation,2026-08-01,2026-08-25,,,24,"[""1.2""]",65,not_started
+3.1,Commissioning and Handover,2026-08-26,2026-09-10,,,15,"[""2.1"",""2.2""]",85,not_started

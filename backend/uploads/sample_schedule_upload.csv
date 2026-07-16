@@ -1,0 +1,7 @@
+wbs_code,task_name,planned_start,planned_end,actual_start,actual_end,duration_days,dependencies,workforce_availability,status
+1.1,Site Preparation and Foundation,2026-07-01,2026-07-21,2026-07-03,,20,,92,in_progress
+1.2,Structural Steel Erection,2026-07-22,2026-08-18,,,28,"[\"1.1\"]",78,not_started
+2.1,Electrical Switchgear Installation,2026-08-19,2026-09-09,,,22,"[\"1.2\"]",70,not_started
+2.2,HVAC Chiller Installation,2026-08-19,2026-09-16,,,29,"[\"1.2\"]",65,not_started
+3.1,Raised Floor and Containment,2026-09-17,2026-10-07,,,21,"[\"2.1\",\"2.2\"]",82,not_started
+4.1,Commissioning and Handover,2026-10-08,2026-10-28,,,21,"[\"3.1\"]",88,not_started
