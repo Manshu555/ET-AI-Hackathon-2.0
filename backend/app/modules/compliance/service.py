@@ -3,8 +3,8 @@ from app.modules.documents.search import find_similar_chunks
 import json
 import logging
 import uuid
-import os
 from datetime import datetime
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ async def check_compliance(
     context_texts = [sr.chunk['chunk_text'] for sr in search_results]
     context_block = "\n".join(context_texts)
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = settings.OPENROUTER_API_KEY
     if not api_key:
         logger.error("OPENROUTER_API_KEY not set in environment.")
         return {"error": "Missing OpenRouter API Key"}
@@ -56,7 +56,8 @@ Return a JSON object in this format exactly:
 If it complies, reply with {{"deviates": false}}."""
         
         response = client.chat.completions.create(
-            model="google/gemini-1.5-flash",
+            model="google/gemini-3.5-flash",
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
         response_text = response.choices[0].message.content

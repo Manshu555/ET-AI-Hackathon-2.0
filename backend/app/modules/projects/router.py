@@ -38,6 +38,21 @@ async def list_projects(
     async for p in db.projects.find().sort("name", 1):
         p["id"] = p.pop("_id")
         projects.append(p)
+
+    if not projects:
+        default_project = {
+            "_id": str(uuid.uuid4()),
+            "name": "Hyperscale Data Center - Phase 1",
+            "location": "Mumbai, India",
+            "client": "TechCorp Global",
+            "start_date": None,
+            "target_completion": None,
+            "status": "Active"
+        }
+        await db.projects.insert_one(default_project)
+        default_project["id"] = default_project.pop("_id")
+        projects.append(default_project)
+
     return projects
 
 

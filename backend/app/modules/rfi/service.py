@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.modules.documents.search import find_similar_chunks
 import uuid
 from datetime import datetime
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ async def process_chat_message(db: AsyncIOMotorDatabase, session_id: str, messag
     context_block = "\n\n---\n\n".join(context_texts) if context_texts else "No specific documents found."
 
     # 2. OpenRouter API Call
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = settings.OPENROUTER_API_KEY
     if not api_key:
         logger.error("OPENROUTER_API_KEY not set in environment.")
         return "I'm sorry, the AI service is currently unconfigured (Missing OpenRouter API Key)."
@@ -54,7 +55,8 @@ Context:
 Question: {message}"""
 
         response = client.chat.completions.create(
-            model="google/gemini-1.5-flash", 
+            model="google/gemini-3.5-flash", 
+            max_tokens=1000,
             messages=[
                 {"role": "user", "content": prompt}
             ]
