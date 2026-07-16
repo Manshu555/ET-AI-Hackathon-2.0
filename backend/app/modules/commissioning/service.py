@@ -1,165 +1,150 @@
-"""
-Commissioning service — guided checklist logic, real-time validation, auto-deviation creation.
-"""
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from app.modules.commissioning.models import CommissioningTemplate, CommissioningRun, CommissioningStep
-from app.modules.compliance.models import Deviation
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from datetime import datetime
 import json
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
 
-async def get_templates(db: AsyncSession) -> list:
-    result = await db.execute(select(CommissioningTemplate))
-    return result.scalars().all()
+async def get_templates(db: AsyncIOMotorDatabase) -> list:
+    templates = []
+    async for t in db.commissioning_templates.find():
+        t["id"] = t.pop("_id")
+        templates.append(t)
+    return templates
 
 
-async def create_run(db: AsyncSession, project_id: str, template_id: str, engineer_id: str) -> dict:
-    """Create a new commissioning run and pre-populate steps from the template."""
-    # Load template
-    result = await db.execute(select(CommissioningTemplate).where(CommissioningTemplate.id == template_id))
-    template = result.scalars().first()
+async def create_run(db: AsyncIOMotorDatabase, project_id: str, template_id: str, engineer_id: str) -> dict:
+    template = await db.commissioning_templates.find_one({"_id": template_id})
     if not template:
         return None
 
-    # Create run
-    run = CommissioningRun(
-        project_id=project_id,
-        template_id=template_id,
-        engineer_id=engineer_id,
-    )
-    db.add(run)
-    await db.flush()
+    run_id = str(uuid.uuid4())
+    run = {
+        "_id": run_id,
+        "project_id": project_id,
+        "template_id": template_id,
+        "engineer_id": engineer_id,
+        "status": "in_progress",
+        "started_at": datetime.utcnow()
+    }
+    
+    await db.commissioning_runs.insert_one(run)
 
-    # Create steps from template
-    steps_data = json.loads(template.steps)
+    steps_data = template.get("steps", [])
+    if isinstance(steps_data, str):
+        steps_data = json.loads(steps_data)
+        
+    steps_to_insert = []
     for step_def in steps_data:
-        step = CommissioningStep(
-            run_id=run.id,
-            step_number=step_def["step_number"],
-            description=step_def["description"],
-            expected_min=step_def.get("expected_min"),
-            expected_max=step_def.get("expected_max"),
-            expected_unit=step_def.get("expected_unit"),
-        )
-        db.add(step)
-
-    await db.commit()
-    await db.refresh(run)
-    return await get_run_detail(db, run.id)
-
-
-async def update_step(db: AsyncSession, run_id: str, step_id: str, actual_value: float) -> dict:
-    """Update a step with the actual measured value. Validates against expected range."""
-    result = await db.execute(
-        select(CommissioningStep)
-        .where(CommissioningStep.id == step_id, CommissioningStep.run_id == run_id)
-    )
-    step = result.scalars().first()
-    if not step:
-        return None
-
-    step.actual_value = actual_value
-    step.updated_at = datetime.utcnow()
-
-    # Validate against expected range
-    in_range = True
-    if step.expected_min is not None and actual_value < step.expected_min:
-        in_range = False
-    if step.expected_max is not None and actual_value > step.expected_max:
-        in_range = False
-
-    if in_range:
-        step.status = "pass"
-    else:
-        step.status = "fail"
-        # Auto-create a linked deviation
-        deviation = Deviation(
-            submittal_id=run_id,  # Reuse submittal_id field for run_id linkage
-            spec_id=step.id,  # Reuse spec_id for step linkage
-            description=f"Commissioning step {step.step_number} failed: '{step.description}'. "
-                        f"Expected {step.expected_min}-{step.expected_max} {step.expected_unit or ''}, "
-                        f"got {actual_value} {step.expected_unit or ''}",
-            severity="Major" if abs((actual_value - (step.expected_min or 0)) / max(abs(step.expected_max - step.expected_min), 1)) > 0.2 else "Minor",
-            detected_by="commissioning",
-            status="open",
-        )
-        db.add(deviation)
-        await db.flush()
-        step.deviation_id = deviation.id
-
-    await db.commit()
-
-    # Check if all steps are completed — if so, mark run as completed
-    run_result = await db.execute(
-        select(CommissioningStep).where(CommissioningStep.run_id == run_id)
-    )
-    all_steps = run_result.scalars().all()
-    if all(s.status in ("pass", "fail") for s in all_steps):
-        run_update_result = await db.execute(
-            select(CommissioningRun).where(CommissioningRun.id == run_id)
-        )
-        run = run_update_result.scalars().first()
-        if run:
-            has_failures = any(s.status == "fail" for s in all_steps)
-            run.status = "completed" if not has_failures else "failed"
-            run.completed_at = datetime.utcnow()
-            await db.commit()
+        steps_to_insert.append({
+            "_id": str(uuid.uuid4()),
+            "run_id": run_id,
+            "step_number": step_def.get("step_number"),
+            "description": step_def.get("description"),
+            "expected_min": step_def.get("expected_min"),
+            "expected_max": step_def.get("expected_max"),
+            "expected_unit": step_def.get("expected_unit"),
+            "status": "pending"
+        })
+        
+    if steps_to_insert:
+        await db.commissioning_steps.insert_many(steps_to_insert)
 
     return await get_run_detail(db, run_id)
 
 
-async def get_run_detail(db: AsyncSession, run_id: str) -> dict:
-    """Get full detail of a commissioning run including all steps."""
-    result = await db.execute(select(CommissioningRun).where(CommissioningRun.id == run_id))
-    run = result.scalars().first()
+async def update_step(db: AsyncIOMotorDatabase, run_id: str, step_id: str, actual_value: float) -> dict:
+    step = await db.commissioning_steps.find_one({"_id": step_id, "run_id": run_id})
+    if not step:
+        return None
+
+    in_range = True
+    expected_min = step.get("expected_min")
+    expected_max = step.get("expected_max")
+    expected_unit = step.get("expected_unit")
+    
+    if expected_min is not None and actual_value < expected_min:
+        in_range = False
+    if expected_max is not None and actual_value > expected_max:
+        in_range = False
+
+    status = "pass" if in_range else "fail"
+    deviation_id = None
+    
+    if not in_range:
+        severity = "Minor"
+        if expected_min is not None and expected_max is not None:
+            if abs((actual_value - expected_min) / max(abs(expected_max - expected_min), 1)) > 0.2:
+                severity = "Major"
+                
+        deviation_id = str(uuid.uuid4())
+        deviation = {
+            "_id": deviation_id,
+            "submittal_id": run_id,
+            "spec_id": step_id,
+            "description": f"Commissioning step {step.get('step_number')} failed: '{step.get('description')}'. "
+                           f"Expected {expected_min}-{expected_max} {expected_unit or ''}, "
+                           f"got {actual_value} {expected_unit or ''}",
+            "severity": severity,
+            "detected_by": "commissioning",
+            "status": "open",
+            "created_at": datetime.utcnow()
+        }
+        await db.deviations.insert_one(deviation)
+
+    await db.commissioning_steps.update_one(
+        {"_id": step_id}, 
+        {"$set": {
+            "actual_value": actual_value, 
+            "updated_at": datetime.utcnow(),
+            "status": status,
+            "deviation_id": deviation_id
+        }}
+    )
+
+    all_steps = await db.commissioning_steps.find({"run_id": run_id}).to_list(None)
+    if all(s.get("status") in ("pass", "fail") for s in all_steps):
+        has_failures = any(s.get("status") == "fail" for s in all_steps)
+        run_status = "failed" if has_failures else "completed"
+        await db.commissioning_runs.update_one(
+            {"_id": run_id}, 
+            {"$set": {"status": run_status, "completed_at": datetime.utcnow()}}
+        )
+
+    return await get_run_detail(db, run_id)
+
+
+async def get_run_detail(db: AsyncIOMotorDatabase, run_id: str) -> dict:
+    run = await db.commissioning_runs.find_one({"_id": run_id})
     if not run:
         return None
 
-    # Get template name
-    tmpl_result = await db.execute(select(CommissioningTemplate).where(CommissioningTemplate.id == run.template_id))
-    template = tmpl_result.scalars().first()
+    template = await db.commissioning_templates.find_one({"_id": run.get("template_id")})
+    
+    steps = await db.commissioning_steps.find({"run_id": run_id}).sort("step_number", 1).to_list(None)
 
-    # Get steps
-    steps_result = await db.execute(
-        select(CommissioningStep)
-        .where(CommissioningStep.run_id == run_id)
-        .order_by(CommissioningStep.step_number)
-    )
-    steps = steps_result.scalars().all()
-
-    pass_count = sum(1 for s in steps if s.status == "pass")
-    fail_count = sum(1 for s in steps if s.status == "fail")
-    pending_count = sum(1 for s in steps if s.status == "pending")
+    pass_count = sum(1 for s in steps if s.get("status") == "pass")
+    fail_count = sum(1 for s in steps if s.get("status") == "fail")
+    pending_count = sum(1 for s in steps if s.get("status") == "pending")
+    
+    formatted_steps = []
+    for s in steps:
+        s["id"] = s.pop("_id")
+        formatted_steps.append(s)
 
     return {
-        "id": run.id,
-        "project_id": run.project_id,
-        "template_id": run.template_id,
-        "template_name": template.name if template else "Unknown",
-        "standard": template.standard if template else "Unknown",
-        "engineer_id": run.engineer_id,
-        "status": run.status,
-        "started_at": run.started_at,
-        "completed_at": run.completed_at,
-        "steps": [
-            {
-                "id": s.id,
-                "run_id": s.run_id,
-                "step_number": s.step_number,
-                "description": s.description,
-                "expected_min": s.expected_min,
-                "expected_max": s.expected_max,
-                "expected_unit": s.expected_unit,
-                "actual_value": s.actual_value,
-                "status": s.status,
-                "deviation_id": s.deviation_id,
-            }
-            for s in steps
-        ],
+        "id": run["_id"],
+        "project_id": run.get("project_id"),
+        "template_id": run.get("template_id"),
+        "template_name": template.get("name") if template else "Unknown",
+        "standard": template.get("standard") if template else "Unknown",
+        "engineer_id": run.get("engineer_id"),
+        "status": run.get("status"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
+        "steps": formatted_steps,
         "pass_count": pass_count,
         "fail_count": fail_count,
         "pending_count": pending_count,

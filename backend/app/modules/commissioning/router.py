@@ -1,80 +1,52 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, Header, HTTPException
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.db.base import get_db
-from app.modules.commissioning import service, schemas
-from app.modules.commissioning.report import generate_commissioning_report
+from app.modules.commissioning.schemas import TemplateResponse, CommissioningRunCreate, CommissioningRunDetail, StepUpdateRequest
+from app.modules.commissioning.service import get_templates, create_run, update_step, get_run_detail
 from app.modules.auth.dependencies import get_current_user
-from app.modules.auth.models import User
 
 router = APIRouter()
 
+@router.get("/templates", response_model=list[TemplateResponse])
+async def api_get_templates(db: AsyncIOMotorDatabase = Depends(get_db)):
+    """List available equipment commissioning templates (e.g., HVAC, Generators)."""
+    templates = await get_templates(db)
+    return templates
 
-@router.get("/templates", response_model=list[schemas.TemplateResponse])
-async def list_templates(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """List all available commissioning test templates."""
-    return await service.get_templates(db)
-
-
-@router.post("/runs", response_model=schemas.CommissioningRunDetail, status_code=status.HTTP_201_CREATED)
-async def create_run(
-    run_in: schemas.CommissioningRunCreate,
+@router.post("/runs", response_model=CommissioningRunDetail, status_code=201)
+async def api_create_run(
+    run_in: CommissioningRunCreate,
     project_id: str = Header(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Start a new commissioning test run from a template."""
-    result = await service.create_run(db, project_id, run_in.template_id, current_user.id)
-    if not result:
+    """Start a new commissioning run for an equipment instance."""
+    run = await create_run(db, project_id, run_in.template_id, current_user["_id"])
+    if not run:
         raise HTTPException(status_code=404, detail="Template not found")
-    return result
+    return run
 
-
-@router.get("/runs/{run_id}", response_model=schemas.CommissioningRunDetail)
-async def get_run(
+@router.get("/runs/{run_id}", response_model=CommissioningRunDetail)
+async def api_get_run(
     run_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Get full detail of a commissioning run."""
-    result = await service.get_run_detail(db, run_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return result
+    """Get the full checklist and status for a specific run."""
+    run = await get_run_detail(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Commissioning run not found")
+    return run
 
-
-@router.patch("/runs/{run_id}/steps/{step_id}", response_model=schemas.CommissioningRunDetail)
-async def update_step(
+@router.patch("/runs/{run_id}/steps/{step_id}", response_model=CommissioningRunDetail)
+async def api_update_step(
     run_id: str,
     step_id: str,
-    step_in: schemas.StepUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    step_in: StepUpdateRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Submit an actual measurement value for a commissioning step."""
-    result = await service.update_step(db, run_id, step_id, step_in.actual_value)
-    if not result:
-        raise HTTPException(status_code=404, detail="Step or run not found")
-    return result
-
-
-@router.get("/runs/{run_id}/report")
-async def get_report(
-    run_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Generate and download the commissioning report."""
-    run_detail = await service.get_run_detail(db, run_id)
-    if not run_detail:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    report_bytes = generate_commissioning_report(run_detail)
-    return Response(
-        content=report_bytes,
-        media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename=commissioning_report_{run_id}.txt"}
-    )
+    """Record an actual measurement for a checklist step and auto-validate."""
+    run = await update_step(db, run_id, step_id, step_in.actual_value)
+    if not run:
+        raise HTTPException(status_code=404, detail="Step or Run not found")
+    return run

@@ -1,17 +1,10 @@
-"""
-Auth dependencies for FastAPI route protection.
-- get_current_user: decodes JWT, loads user from DB, attaches to request
-- require_role(*roles): wraps routes to enforce RBAC
-"""
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from jose import jwt, JWTError
 from app.core.config import settings
 from app.core.security import ALGORITHM
 from app.db.base import get_db
-from app.modules.auth.models import User
 from typing import Callable
 
 security_scheme = HTTPBearer(auto_error=False)
@@ -19,9 +12,9 @@ security_scheme = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Decode the JWT access token and return the authenticated User."""
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> dict:
+    """Decode the JWT access token and return the authenticated User dict."""
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -41,10 +34,11 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalars().first()
+    user = await db.users.find_one({"_id": user_id})
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        
+    user["id"] = user["_id"]
     return user
 
 
@@ -52,15 +46,13 @@ def require_role(*roles: str) -> Callable:
     """
     Dependency factory: returns a dependency that checks whether the current
     user has one of the allowed roles.
-
-    Usage:
-        @router.post("/admin-only", dependencies=[Depends(require_role("Admin", "PM"))])
     """
-    async def _check(current_user: User = Depends(get_current_user)):
-        if current_user.role not in roles:
+    async def _check(current_user: dict = Depends(get_current_user)):
+        user_role = current_user.get("role", "engineer")
+        if user_role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{current_user.role}' is not authorized. Required: {', '.join(roles)}",
+                detail=f"Role '{user_role}' is not authorized. Required: {', '.join(roles)}",
             )
         return current_user
     return _check

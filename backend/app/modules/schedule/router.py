@@ -1,45 +1,59 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Header, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, Header, UploadFile, File, HTTPException
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.db.base import get_db
-from app.modules.schedule import service, schemas
+from app.modules.schedule.schemas import ScheduleTaskResponse, RiskExplanationResponse, RiskScoreResponse
+from app.modules.schedule.service import import_schedule_csv, compute_all_risk_scores, get_task_risk_explanation
 from app.modules.auth.dependencies import get_current_user
-from app.modules.auth.models import User
+import uuid
 
 router = APIRouter()
 
-
-@router.post("/import", response_model=schemas.CSVImportResponse)
+@router.post("/import")
 async def import_schedule(
     file: UploadFile = File(...),
     project_id: str = Header(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Import schedule tasks from a CSV file."""
+    """Import an MS Project / Primavera schedule exported as CSV."""
     content = await file.read()
-    csv_text = content.decode("utf-8")
-    result = await service.import_schedule_csv(db, project_id, csv_text)
+    result = await import_schedule_csv(db, project_id, content.decode("utf-8", errors="ignore"))
     return result
 
-
-@router.get("/risk", response_model=list[schemas.RiskScoreResponse])
-async def get_schedule_risk(
+@router.get("/tasks", response_model=list[ScheduleTaskResponse])
+async def get_tasks(
     project_id: str = Header(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Compute and return risk scores for all tasks in the project."""
-    return await service.compute_all_risk_scores(db, project_id)
+    """Get raw tasks."""
+    tasks = []
+    async for t in db.schedule_tasks.find({"project_id": project_id}):
+        t["id"] = t.pop("_id")
+        # Ensure datetimes are formatted if they exist
+        if t.get("planned_start"): t["planned_start"] = t["planned_start"].date() if hasattr(t["planned_start"], "date") else t["planned_start"]
+        if t.get("planned_end"): t["planned_end"] = t["planned_end"].date() if hasattr(t["planned_end"], "date") else t["planned_end"]
+        if t.get("actual_start"): t["actual_start"] = t["actual_start"].date() if hasattr(t["actual_start"], "date") else t["actual_start"]
+        if t.get("actual_end"): t["actual_end"] = t["actual_end"].date() if hasattr(t["actual_end"], "date") else t["actual_end"]
+        tasks.append(t)
+    return tasks
 
+@router.post("/compute-risk", response_model=list[RiskScoreResponse])
+async def compute_risk(
+    project_id: str = Header(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Recompute AI Risk Scores for all tasks in the project."""
+    results = await compute_all_risk_scores(db, project_id)
+    return results
 
-@router.get("/tasks/{task_id}/risk-explanation", response_model=schemas.RiskExplanationResponse)
+@router.get("/tasks/{task_id}/risk", response_model=RiskExplanationResponse)
 async def get_risk_explanation(
     task_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Get detailed risk explanation with SHAP-style contributing factors."""
-    result = await service.get_task_risk_explanation(db, task_id)
-    if not result:
+    """Get detailed risk feature explanation for a specific task."""
+    explanation = await get_task_risk_explanation(db, task_id)
+    if not explanation:
         raise HTTPException(status_code=404, detail="Task not found")
-    return result
+    return explanation

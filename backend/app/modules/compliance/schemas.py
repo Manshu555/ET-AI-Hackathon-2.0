@@ -2,9 +2,25 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 
+class SpecificationCreate(BaseModel):
+    title: str
+    content: str
+    section_code: str
+
+
+class SpecificationResponse(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    content: str
+    section_code: str
+
+
 class SubmittalCreate(BaseModel):
     document_id: str
     vendor_id: str
+    title: str
+    description: str
     spec_ids: Optional[List[str]] = None
 
 
@@ -12,6 +28,8 @@ class SubmittalResponse(BaseModel):
     id: str
     project_id: str
     vendor_id: str
+    title: str
+    description: str
     document_id: str
     status: str
     reviewed_by: Optional[str] = None

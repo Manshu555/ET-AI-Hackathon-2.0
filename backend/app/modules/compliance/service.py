@@ -1,87 +1,88 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from app.modules.compliance.models import Submittal, Deviation, Specification
-from app.modules.documents.models import DocumentChunk, Document
-from app.shared.ai.embedding_client import get_embedding
-from app.core.config import settings
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from app.modules.documents.search import find_similar_chunks
 import json
-import re
 import logging
+import uuid
+import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-def extract_numeric_value(text: str) -> float:
-    """A simple deterministic rule engine for extracting numeric values."""
-    match = re.search(r'\b(\d+(\.\d+)?)\b', text)
-    if match:
-        return float(match.group(1))
-    return None
 
-async def run_compliance_check(db: AsyncSession, submittal_id: str):
-    # 1. Fetch Submittal and its chunks
-    result = await db.execute(select(Submittal).where(Submittal.id == submittal_id))
-    submittal = result.scalars().first()
-    
+async def check_compliance(
+    db: AsyncIOMotorDatabase,
+    submittal_id: str,
+    spec_id: str,
+    project_id: str,
+) -> dict:
+    from openai import OpenAI
+
+    submittal = await db.submittals.find_one({"_id": submittal_id})
     if not submittal:
-        raise ValueError("Submittal not found")
+        return {"error": "Submittal not found"}
         
-    sub_chunks_result = await db.execute(
-        select(DocumentChunk).where(DocumentChunk.document_id == submittal.document_id)
-    )
-    submittal_chunks = sub_chunks_result.scalars().all()
-    
-    # 2. Retrieve Specifications for this project
-    spec_result = await db.execute(select(Specification).where(Specification.project_id == submittal.project_id))
-    specs = spec_result.scalars().all()
-    
-    # Check each submittal chunk against specs
-    for chunk in submittal_chunks:
-        for spec in specs:
-            # Deterministic numeric check
-            if spec.numeric_requirement is not None:
-                extracted_val = extract_numeric_value(chunk.chunk_text)
-                if extracted_val and extracted_val < spec.numeric_requirement:
-                    dev = Deviation(
-                        submittal_id=submittal.id,
-                        spec_id=spec.id,
-                        description=f"Value {extracted_val} does not meet requirement {spec.numeric_requirement}",
-                        severity="Major",
-                        detected_by="rule"
-                    )
-                    db.add(dev)
-                    continue
-            
-            # AI Check using new google.genai SDK
-            if settings.GEMINI_API_KEY:
-                try:
-                    from google import genai
-                    
-                    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-                    prompt = f"""You are a compliance agent reviewing a submittal against a specification.
-Specification: {spec.requirement_text}
-Submittal Text: {chunk.chunk_text}
+    spec = await db.specifications.find_one({"_id": spec_id})
+    if not spec:
+        return {"error": "Specification not found"}
 
-Does the submittal deviate from the specification? If so, reply with JSON: {{"deviates": true, "severity": "Minor|Major|Critical", "description": "..."}}. 
+    search_query = f"{spec['title']} {spec['content']} {submittal['title']}"
+    search_results = await find_similar_chunks(db, search_query, project_id=project_id, top_k=3)
+
+    context_texts = [sr.chunk['chunk_text'] for sr in search_results]
+    context_block = "\n".join(context_texts)
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY not set in environment.")
+        return {"error": "Missing OpenRouter API Key"}
+
+    try:
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+
+        prompt = f"""You are a compliance checker for an engineering project.
+Compare the submittal against the specification and relevant document context.
+Determine if the submittal complies with the specification.
+If it deviates, provide a severity (Minor, Major, Critical) and a description.
+
+Specification: {spec['title']} - {spec['content']}
+Submittal: {submittal['title']} - {submittal['description']}
+Context: {context_block}
+
+Return a JSON object in this format exactly:
+{{"deviates": true, "severity": "Major", "description": "Reason for deviation"}}
 If it complies, reply with {{"deviates": false}}."""
-                    
-                    response = client.models.generate_content(
-                        model="gemini-2.0-flash",
-                        contents=prompt
-                    )
-                    response_text = response.text
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        parsed = json.loads(json_match.group(0))
-                        if parsed.get("deviates"):
-                            dev = Deviation(
-                                submittal_id=submittal.id,
-                                spec_id=spec.id,
-                                description=parsed.get("description", "AI detected deviation"),
-                                severity=parsed.get("severity", "Major"),
-                                detected_by="ai"
-                            )
-                            db.add(dev)
-                except Exception as e:
-                    logger.error(f"LLM Error during compliance check: {e}")
-                    
-    await db.commit()
+        
+        response = client.chat.completions.create(
+            model="google/gemini-1.5-flash",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        response_text = response.choices[0].message.content
+        
+        if response_text.startswith("```json"):
+            response_text = response_text[7:-3]
+        
+        result = json.loads(response_text)
+        
+        if result.get("deviates"):
+            deviation = {
+                "_id": str(uuid.uuid4()),
+                "submittal_id": submittal_id,
+                "spec_id": spec_id,
+                "description": result.get("description", "Unknown deviation"),
+                "severity": result.get("severity", "Minor"),
+                "detected_by": "ai",
+                "status": "open",
+                "created_at": datetime.utcnow()
+            }
+            await db.deviations.insert_one(deviation)
+            deviation["id"] = deviation.pop("_id")
+            return {"status": "deviated", "deviation": deviation}
+        else:
+            return {"status": "compliant"}
+
+    except Exception as e:
+        logger.error(f"Compliance check failed: {e}")
+        return {"error": str(e)}

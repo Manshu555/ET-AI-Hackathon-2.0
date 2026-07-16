@@ -1,101 +1,89 @@
-"""
-RFI / Knowledge Chat service.
-
-Handles RAG-based question answering over the project document corpus.
-Uses the shared vector search utility from documents/search.py instead
-of inline scipy logic.
-"""
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from app.modules.rfi.models import ChatSession, ChatMessage
-from app.modules.documents.search import find_similar_chunks
-from app.core.config import settings
+import os
 import json
 import logging
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from app.modules.documents.search import find_similar_chunks
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 
-async def process_chat_message(db: AsyncSession, session_id: str, user_message: str) -> str:
-    context_str = ""
-    citations = []
+async def process_chat_message(db: AsyncIOMotorDatabase, session_id: str, message: str) -> str:
+    from openai import OpenAI
+    
+    session = await db.chat_sessions.find_one({"_id": session_id})
+    if not session:
+        return "Session not found."
 
-    # --- 1. RAG retrieval using shared vector search ---
+    # 1. RAG Retrieval - Find similar chunks
+    search_results = await find_similar_chunks(db, message, project_id=session.get("project_id"), top_k=5)
+
+    context_texts = []
+    citations = []
+    for sr in search_results:
+        # Resolve document filename
+        doc = await db.documents.find_one({"_id": sr.document_id})
+        filename = doc["filename"] if doc else "Unknown Document"
+        
+        ctx = f"Document: {filename}\nPage: {sr.page_number or 'N/A'}\nSection: {sr.section_heading or 'N/A'}\nText: {sr.chunk['chunk_text']}"
+        context_texts.append(ctx)
+        citations.append(sr.chunk["id"])
+
+    context_block = "\n\n---\n\n".join(context_texts) if context_texts else "No specific documents found."
+
+    # 2. OpenRouter API Call
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY not set in environment.")
+        return "I'm sorry, the AI service is currently unconfigured (Missing OpenRouter API Key)."
+        
     try:
-        results = await find_similar_chunks(
-            db=db,
-            query=user_message,
-            project_id=None,  # Search across all projects for now
-            top_k=5,
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
         )
 
-        if results:
-            context_texts = []
-            for result in results:
-                chunk = result.chunk
-                source_label = f"[Page {result.page_number}]" if result.page_number else f"[{chunk.id}]"
-                if result.section_heading:
-                    source_label += f" ({result.section_heading})"
-                context_texts.append(f"Source {source_label}: {chunk.chunk_text}")
-                citations.append({
-                    "chunk_id": chunk.id,
-                    "document_id": result.document_id,
-                    "page_number": result.page_number,
-                    "section": result.section_heading,
-                })
-
-            context_str = "\n\n".join(context_texts)
-    except Exception as e:
-        logger.warning(f"RAG retrieval error (running in fallback mode): {e}")
-        context_str = ""
-
-    # --- 2. Call Gemini LLM ---
-    if not settings.GEMINI_API_KEY:
-        ai_reply = "The Gemini API key is not configured. Please set GEMINI_API_KEY in the backend .env file."
-    else:
-        try:
-            from google import genai
-
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
-            if context_str:
-                prompt = f"""You are a construction engineering assistant answering an RFI (Request for Information).
-Use the following context from project documents to answer the question. Cite your sources using the page numbers and section headings provided.
-If you cannot find the answer in the provided context, say so honestly — do not guess.
+        prompt = f"""You are a helpful engineering assistant for a construction and EPC project.
+Use the following retrieved context from project documents to answer the user's question.
+If the answer is not contained in the context, say so clearly.
 
 Context:
-{context_str}
+{context_block}
 
-Question: {user_message}"""
-            else:
-                prompt = f"""You are a construction engineering assistant for the EPC-Intel platform.
-Answer the following question from your general knowledge of construction engineering, specifications, and submittals.
-Be helpful and professional.
+Question: {message}"""
 
-Question: {user_message}"""
-
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
-            )
-            ai_reply = response.text
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            ai_reply = f"I'm sorry, I encountered an error communicating with the AI service: {str(e)}"
-
-    # --- 3. Persist messages to DB (non-fatal if DB has issues) ---
-    try:
-        user_msg = ChatMessage(session_id=session_id, role="user", content=user_message)
-        ai_msg = ChatMessage(
-            session_id=session_id,
-            role="ai",
-            content=ai_reply,
-            citations=json.dumps(citations) if citations else None
+        response = client.chat.completions.create(
+            model="google/gemini-1.5-flash", 
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
         )
-        db.add(user_msg)
-        db.add(ai_msg)
-        await db.commit()
-    except Exception as e:
-        logger.warning(f"Failed to persist chat messages to DB (non-fatal): {e}")
+        reply = response.choices[0].message.content
 
-    return ai_reply
+    except Exception as e:
+        logger.error(f"OpenRouter API error: {e}")
+        reply = f"I'm sorry, I encountered an error communicating with the AI service: {e}"
+
+    # 3. Store messages in DB
+    user_msg = {
+        "_id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "user",
+        "content": message,
+        "citations": None,
+        "created_at": datetime.utcnow()
+    }
+    
+    ai_msg = {
+        "_id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "ai",
+        "content": reply,
+        "citations": json.dumps(citations),
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.chat_messages.insert_many([user_msg, ai_msg])
+
+    return reply

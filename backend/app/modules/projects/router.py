@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.db.base import get_db
-from app.modules.projects import models, schemas
+from app.modules.projects import schemas
 from app.modules.auth.dependencies import get_current_user
-from app.modules.auth.models import User
+import uuid
 
 router = APIRouter()
 
@@ -12,41 +11,46 @@ router = APIRouter()
 @router.post("", response_model=schemas.ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     project_in: schemas.ProjectCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    project = models.Project(
-        name=project_in.name,
-        location=project_in.location,
-        client=project_in.client,
-        start_date=project_in.start_date,
-        target_completion=project_in.target_completion,
-    )
-    db.add(project)
-    await db.commit()
-    await db.refresh(project)
-    return project
+    project_dict = {
+        "_id": str(uuid.uuid4()),
+        "name": project_in.name,
+        "location": project_in.location,
+        "client": project_in.client,
+        "start_date": project_in.start_date.isoformat() if project_in.start_date else None,
+        "target_completion": project_in.target_completion.isoformat() if project_in.target_completion else None,
+        "status": "Active"
+    }
+    await db.projects.insert_one(project_dict)
+    
+    project_dict["id"] = project_dict.pop("_id")
+    return project_dict
 
 
 @router.get("", response_model=list[schemas.ProjectResponse])
 async def list_projects(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    result = await db.execute(select(models.Project).order_by(models.Project.name))
-    return result.scalars().all()
+    projects = []
+    async for p in db.projects.find().sort("name", 1):
+        p["id"] = p.pop("_id")
+        projects.append(p)
+    return projects
 
 
 @router.get("/{project_id}", response_model=schemas.ProjectResponse)
 async def get_project(
     project_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
-    project = result.scalars().first()
+    project = await db.projects.find_one({"_id": project_id})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project["id"] = project.pop("_id")
     return project
 
 
@@ -54,18 +58,22 @@ async def get_project(
 async def update_project(
     project_id: str,
     project_in: schemas.ProjectUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    result = await db.execute(select(models.Project).where(models.Project.id == project_id))
-    project = result.scalars().first()
+    project = await db.projects.find_one({"_id": project_id})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     update_data = project_in.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(project, field, value)
+    if "start_date" in update_data and update_data["start_date"]:
+        update_data["start_date"] = update_data["start_date"].isoformat()
+    if "target_completion" in update_data and update_data["target_completion"]:
+        update_data["target_completion"] = update_data["target_completion"].isoformat()
 
-    await db.commit()
-    await db.refresh(project)
+    if update_data:
+        await db.projects.update_one({"_id": project_id}, {"$set": update_data})
+        
+    project = await db.projects.find_one({"_id": project_id})
+    project["id"] = project.pop("_id")
     return project

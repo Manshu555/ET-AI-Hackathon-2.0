@@ -1,14 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Cookie
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from jose import jwt, JWTError
 from app.db.base import get_db
-from app.modules.auth import schemas, models
+from app.modules.auth import schemas
 from app.modules.auth.dependencies import get_current_user
 from app.core import security
 from app.core.config import settings
 from typing import Optional
 import logging
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -16,36 +17,38 @@ router = APIRouter()
 
 
 @router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(user_in: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.User).where(models.User.email == user_in.email))
-    user = result.scalars().first()
+async def register(user_in: schemas.UserCreate, db: AsyncIOMotorDatabase = Depends(get_db)):
+    user = await db.users.find_one({"email": user_in.email})
     if user:
         raise HTTPException(
             status_code=409,
             detail="The user with this email already exists in the system",
         )
-    user = models.User(
-        name=user_in.name,
-        email=user_in.email,
-        password_hash=security.get_password_hash(user_in.password),
-        role=user_in.role,
-        auth_provider="local",
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
+        
+    new_user = {
+        "_id": str(uuid.uuid4()),
+        "name": user_in.name,
+        "email": user_in.email,
+        "password_hash": security.get_password_hash(user_in.password),
+        "role": user_in.role,
+        "auth_provider": "local",
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.users.insert_one(new_user)
+    new_user["id"] = new_user.pop("_id")
+    return new_user
 
 
 @router.post("/login")
-async def login(response: Response, user_in: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.User).where(models.User.email == user_in.email))
-    user = result.scalars().first()
-    if not user or not user.password_hash or not security.verify_password(user_in.password, user.password_hash):
+async def login(response: Response, user_in: schemas.UserLogin, db: AsyncIOMotorDatabase = Depends(get_db)):
+    user = await db.users.find_one({"email": user_in.email})
+    
+    if not user or not user.get("password_hash") or not security.verify_password(user_in.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    access_token = security.create_access_token(subject=user.id, role=user.role)
-    refresh_token = security.create_refresh_token(subject=user.id)
+    access_token = security.create_access_token(subject=user["_id"], role=user.get("role", "engineer"))
+    refresh_token = security.create_refresh_token(subject=user["_id"])
 
     response.set_cookie(
         key="refresh_token",
@@ -56,7 +59,7 @@ async def login(response: Response, user_in: schemas.UserLogin, db: AsyncSession
     )
     return {
         "access_token": access_token,
-        "user": schemas.UserResponse(id=user.id, name=user.name, email=user.email, role=user.role),
+        "user": schemas.UserResponse(id=user["_id"], name=user["name"], email=user["email"], role=user.get("role", "engineer")),
     }
 
 
@@ -64,7 +67,7 @@ async def login(response: Response, user_in: schemas.UserLogin, db: AsyncSession
 async def refresh_token(
     response: Response,
     refresh_token: Optional[str] = Cookie(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Use the httpOnly refresh token cookie to get a new access token."""
     if not refresh_token:
@@ -79,14 +82,13 @@ async def refresh_token(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    result = await db.execute(select(models.User).where(models.User.id == user_id))
-    user = result.scalars().first()
+    user = await db.users.find_one({"_id": user_id})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
     # Issue new tokens
-    new_access = security.create_access_token(subject=user.id, role=user.role)
-    new_refresh = security.create_refresh_token(subject=user.id)
+    new_access = security.create_access_token(subject=user["_id"], role=user.get("role", "engineer"))
+    new_refresh = security.create_refresh_token(subject=user["_id"])
 
     response.set_cookie(
         key="refresh_token",
@@ -97,7 +99,7 @@ async def refresh_token(
     )
     return {
         "access_token": new_access,
-        "user": schemas.UserResponse(id=user.id, name=user.name, email=user.email, role=user.role),
+        "user": schemas.UserResponse(id=user["_id"], name=user["name"], email=user["email"], role=user.get("role", "engineer")),
     }
 
 
@@ -108,6 +110,6 @@ async def logout(response: Response):
 
 
 @router.get("/me", response_model=schemas.UserResponse)
-async def get_me(current_user: models.User = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user)):
     """Get the currently authenticated user."""
     return current_user
